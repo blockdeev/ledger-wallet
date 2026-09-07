@@ -36,6 +36,24 @@ export default tseslint.config(
     },
   },
   {
-    ignores: ["dist/**", "node_modules/**", "vitest.config.ts", "eslint.config.js"],
+    // Frontera hexagonal: la capa de aplicación no puede importar infraestructura ni adapters
+    files: ["src/application/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            { group: ["fastify", "fastify/*"], message: "Application layer must not depend on Fastify (HTTP adapter)." },
+            { group: ["kysely", "kysely/*"], message: "Application layer must not depend on Kysely (DB adapter)." },
+            { group: ["pg", "pg/*"], message: "Application layer must not depend on pg (DB adapter)." },
+            { group: ["**/adapters/**"], message: "Application layer must not import from adapters." },
+            { group: ["**/config/**"], message: "Application layer must not import from config." },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    ignores: ["dist/**", "node_modules/**", "coverage/**", "vitest.config.ts", "eslint.config.js"],
   },
 );

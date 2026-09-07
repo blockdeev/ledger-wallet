@@ -57,6 +57,7 @@ describe("applyTransaction — UnknownAccountError (Tarea 0)", () => {
   });
 
   it("throws UnknownAccountError when both accounts are unknown", () => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const lookup = (_id: string): Account | undefined => undefined;
     const balances = new Map<string, Money>([
       ["x", Money.fromMinor(500n, "ARS")],

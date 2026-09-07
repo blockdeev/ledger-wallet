@@ -14,7 +14,7 @@ Pull Request con el CI en verde.
 
 - [x] **Fase 0 — Walking skeleton.** Compila, testea, linta, bootea y buildea en Docker con CI.
 - [x] **Fase 1 — Núcleo de dominio (TDD).** `Money`, `Account`, `Posting`, `LedgerTransaction` y sus invariantes; 100% test-first.
-- [ ] **Fase 2 — Ports y casos de uso.** Repositorios (interfaces), `Transfer` / `GetBalance` / `CreateAccount`, adapter in-memory.
+- [x] **Fase 2 — Ports y casos de uso.** Puertos de salida (`AccountRepository`, `TransactionRepository`), casos de uso (`CreateAccount`, `Transfer`, `GetBalance`), adapters in-memory, derivación de saldo desde historial. Tests end-to-end sin DB.
 - [ ] **Fase 3 — Persistencia.** PostgreSQL + Kysely, migraciones.
 - [ ] **Fase 4 — Observabilidad.** Logging estructurado, tracing, métricas.
 - [ ] **Fase 5 — CI/CD y despliegue.**
@@ -78,6 +78,30 @@ el dinero, por qué hexagonal y no layered) están registradas en [`docs/adr/`](
 Los errores viven en el dominio y hablan su propio idioma (`DomainError` y subclases), no
 códigos HTTP.
 
+## Casos de uso
+
+La capa de aplicación (`src/application/`) orquesta el dominio a través de puertos (interfaces)
+inyectados por constructor. Los casos de uso son puros respecto de la infraestructura: no
+conocen HTTP, DB ni ningún framework.
+
+- **`CreateAccount`** — Registra una nueva cuenta en el repositorio. Recibe `{ id, currency,
+  type }`. Lanza `AccountAlreadyExistsError` si el id ya existe.
+
+- **`Transfer`** — Transfiere fondos entre dos cuentas. Recibe `{ id, fromAccountId,
+  toAccountId, amount, occurredAt? }`. Valida existencia de ambas cuentas
+  (`AccountNotFoundError` si falta alguna), construye una `LedgerTransaction` balanceada,
+  verifica que la cuenta origen tenga fondos suficientes (`OverdraftError` si es
+  `CUSTOMER_WALLET` y quedaría en negativo), y persiste la transacción solo si todo es válido
+  (todo-o-nada). Las cuentas `SYSTEM_CLEARING` y `EXTERNAL` pueden quedar en negativo.
+
+- **`GetBalance`** — Calcula el saldo actual de una cuenta derivando la suma de todos sus
+  postings desde el historial de transacciones. Lanza `AccountNotFoundError` si la cuenta no
+  existe. Si existe pero no tiene movimientos, retorna `Money.zero(currency)`.
+
+El saldo se **deriva del historial** (no se guarda como columna mutable), lo que garantiza
+auditabilidad y consistencia. Ver ADR 0008 para el razonamiento completo y la estrategia de
+optimización planeada para Fase 3.
+
 ## Requisitos
 
 - Node.js 22 (ver [`.nvmrc`](.nvmrc))
@@ -114,9 +138,15 @@ llegan en fases posteriores.
 
 ## Tests
 
-Desarrollado por TDD. El núcleo de dominio se cubre al ~97% de líneas (100% en funciones),
-con tests unitarios por cada invariante. La frontera hexagonal tiene su propia verificación:
-el lint falla si el dominio importa infraestructura.
+Desarrollado por TDD estricto (red → green → refactor, Conventional Commits).
+
+- **Dominio** (`src/domain/`): ~97% líneas, 100% funciones.
+- **Aplicación** (`src/application/`): 100% líneas, 100% funciones.
+- **Adapters in-memory**: cubiertos por tests unitarios propios.
+
+La frontera hexagonal tiene verificación doble: el lint falla si `src/domain/**` o
+`src/application/**` importan infraestructura o adapters. Los tests de aplicación corren
+end-to-end con adapters in-memory, sin base de datos.
 
 ## Decisiones de arquitectura (ADRs)
 
@@ -129,6 +159,7 @@ Ver [`docs/adr/`](docs/adr):
 - `0005` — Arquitectura (hexagonal pragmática)
 - `0006` — Representación monetaria (`bigint`)
 - `0007` — Modelo de partida doble
+- `0008` — Capa de aplicación (puertos, DIP, derivación de saldo)
 
 ## Licencia
 
