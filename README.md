@@ -1,10 +1,24 @@
 # ledger-wallet
 
-Core de un servicio de ledger/wallet (motor contable) construido con arquitectura hexagonal, TDD y TypeScript estricto.
+Motor contable (ledger) de una billetera digital: la pieza de **doble entrada** que hay
+debajo de una app tipo Brubank, Lemon o NaranjaX. No es un clon de neobanco — es el núcleo
+donde viven la integridad del dinero y las reglas de negocio, construido con foco productivo.
 
-> **Fase 0 — Walking Skeleton:** el proyecto compila, testea, linta, bootea y buildea en Docker. La lógica de dominio se implementa en fases posteriores.
+Proyecto de portfolio. Prioridades de ingeniería: arquitectura hexagonal, TDD, tipado
+estricto, y un camino claro hacia observabilidad, CI/CD e integración con AWS.
 
----
+## Estado
+
+El proyecto se construye por fases. Cada fase se documenta con un ADR y se integra vía
+Pull Request con el CI en verde.
+
+- [x] **Fase 0 — Walking skeleton.** Compila, testea, linta, bootea y buildea en Docker con CI.
+- [x] **Fase 1 — Núcleo de dominio (TDD).** `Money`, `Account`, `Posting`, `LedgerTransaction` y sus invariantes; 100% test-first.
+- [ ] **Fase 2 — Ports y casos de uso.** Repositorios (interfaces), `Transfer` / `GetBalance` / `CreateAccount`, adapter in-memory.
+- [ ] **Fase 3 — Persistencia.** PostgreSQL + Kysely, migraciones.
+- [ ] **Fase 4 — Observabilidad.** Logging estructurado, tracing, métricas.
+- [ ] **Fase 5 — CI/CD y despliegue.**
+- [ ] **Fase 6 — Integración AWS** (SQS / SNS / S3).
 
 ## Stack
 
@@ -19,98 +33,103 @@ Core de un servicio de ledger/wallet (motor contable) construido con arquitectur
 | Contenedores  | Docker multi-stage + docker-compose     |
 | CI            | GitHub Actions                          |
 
----
+## Arquitectura
+
+Hexagonal (ports & adapters), un bounded context, con la **regla de dependencia** apuntando
+siempre hacia el dominio. El dominio es TypeScript puro: no importa Fastify, ni Kysely, ni
+`pg`, ni nada de infraestructura.
+
+Esa frontera **se hace cumplir con el linter**, no solo con un diagrama: una regla de ESLint
+prohíbe que `src/domain/**` importe adapters, config, la capa de aplicación o librerías de
+infraestructura. Si alguien la cruza, el lint —y por lo tanto el CI— falla.
+
+```
+src/
+  domain/         # Lógica de negocio pura (sin infraestructura)
+  application/
+    ports/        # Interfaces (contratos) hacia/desde el dominio
+  adapters/
+    inbound/      # Drivers de entrada (HTTP con Fastify)
+    outbound/     # Driven adapters (repositorios, clientes externos)
+  config/         # Lectura de configuración / entorno
+  shared/
+```
+
+Las decisiones de diseño (por qué Fastify, por qué Kysely y no un ORM, por qué `bigint` para
+el dinero, por qué hexagonal y no layered) están registradas en [`docs/adr/`](docs/adr).
+
+## Modelo de dominio
+
+- **`Money`** — value object inmutable. Representa montos como enteros en unidades mínimas
+  (centavos) con `bigint`, nunca con punto flotante. Aritmética y comparaciones seguras por
+  moneda: operar entre monedas distintas lanza `CurrencyMismatchError`.
+- **`Account`** — `{ id, currency, type }`. `AccountType` ∈
+  `CUSTOMER_WALLET | SYSTEM_CLEARING | EXTERNAL`. Las wallets de cliente no pueden quedar en
+  negativo; las de sistema/externas sí.
+- **`Posting`** — un movimiento con signo sobre una cuenta (no puede ser cero).
+- **`LedgerTransaction`** — conjunto de **≥ 2 postings que suman cero** (partida doble). Al
+  construirse valida que esté balanceada, en una sola moneda y sin montos cero; si no, lanza
+  el error de dominio correspondiente (`UnbalancedTransactionError`, `CurrencyMismatchError`,
+  `NonZeroPostingError`, `InsufficientPostingsError`).
+- **`applyTransaction`** — función pura que aplica una transacción a un mapa de saldos,
+  **todo-o-nada**, respetando la política de sobregiro (una wallet de cliente que quedaría
+  negativa lanza `OverdraftError` y no aplica nada).
+
+Los errores viven en el dominio y hablan su propio idioma (`DomainError` y subclases), no
+códigos HTTP.
+
+## Requisitos
+
+- Node.js 22 (ver [`.nvmrc`](.nvmrc))
+- npm
+- Docker (opcional, para levantar el stack completo)
 
 ## Cómo correr
 
-### Desarrollo
-
 ```bash
-# Instalar dependencias
-npm ci
-
-# Levantar en modo watch
-npm run dev
-
-# En otra terminal: typecheck continuo
-npx tsc --noEmit --watch
+npm ci              # instalar dependencias (exacto, desde el lockfile)
+npm run dev         # servidor en modo watch
+npm run build       # compilar a dist/
+npm start           # correr el build
 ```
 
-### Tests
+### Calidad
 
 ```bash
-# Run once
-npm test
-
-# Watch mode (TDD)
-npm run test:watch
-```
-
-### Lint y formato
-
-```bash
-npm run lint
-npm run format
-npm run typecheck
+npm run typecheck     # tsc --noEmit
+npm run lint          # ESLint (incluye la regla de frontera del dominio)
+npm test              # Vitest (una corrida)
+npm run test:watch    # TDD
+npm run test:coverage # cobertura del dominio
 ```
 
 ### Docker
 
 ```bash
-# Build de la imagen
-docker build .
-
-# Levantar app + postgres
-docker compose up
-
-# Verificar health
-curl http://localhost:3000/health
-# {"status":"ok"}
+docker compose up --build   # app + PostgreSQL
 ```
 
----
+Endpoint disponible hoy: `GET /health` → `{ "status": "ok" }`. Los endpoints de negocio
+llegan en fases posteriores.
 
-## Estructura
+## Tests
 
-```
-src/
-  domain/                 # Entidades y lógica de negocio (Fase 1+)
-  application/
-    ports/                # Interfaces/contratos del dominio (Fase 1+)
-  adapters/
-    inbound/http/         # Fastify app + rutas HTTP
-    outbound/persistence/ # Repositorios / Kysely (Fase 1+)
-  config/                 # Lectura de variables de entorno
-  shared/                 # Utilidades compartidas
-  main.ts                 # Entry point
-test/                     # Tests de integración/e2e
-docs/adr/                 # Architecture Decision Records
-.github/workflows/        # CI (GitHub Actions)
-```
+Desarrollado por TDD. El núcleo de dominio se cubre al ~97% de líneas (100% en funciones),
+con tests unitarios por cada invariante. La frontera hexagonal tiene su propia verificación:
+el lint falla si el dominio importa infraestructura.
 
----
+## Decisiones de arquitectura (ADRs)
 
-## Variables de entorno
+Ver [`docs/adr/`](docs/adr):
 
-Copiar `.env.example` a `.env` y ajustar:
+- `0001` — Runtime y tipado
+- `0002` — Framework HTTP (Fastify)
+- `0003` — Runner de tests (Vitest)
+- `0004` — Acceso a datos (Kysely + PostgreSQL)
+- `0005` — Arquitectura (hexagonal pragmática)
+- `0006` — Representación monetaria (`bigint`)
+- `0007` — Modelo de partida doble
 
-```bash
-cp .env.example .env
-```
+## Licencia
 
-| Variable       | Default | Descripción                       |
-| -------------- | ------- | --------------------------------- |
-| `PORT`         | `3000`  | Puerto en que escucha el servidor |
-| `DATABASE_URL` | —       | Connection string de PostgreSQL   |
-
----
-
-## Architecture Decision Records
-
-Las decisiones de arquitectura están documentadas en [`docs/adr/`](docs/adr/):
-
-- [0001 — Runtime y tipado](docs/adr/0001-runtime-y-tipado.md)
-- [0002 — Framework HTTP](docs/adr/0002-framework-http.md)
-- [0003 — Runner de tests](docs/adr/0003-runner-de-tests.md)
-- [0004 — Acceso a datos](docs/adr/0004-acceso-a-datos.md)
-- [0005 — Arquitectura](docs/adr/0005-arquitectura.md)
+MIT — ver [`LICENSE`](LICENSE).
