@@ -11,12 +11,28 @@ export default tseslint.config(
   {
     languageOptions: {
       parserOptions: {
-        projectService: {
-          allowDefaultProject: ["test/*.ts", "vitest.config.ts"],
-          defaultProject: "./tsconfig.eslint.json",
-        },
+        project: ["./tsconfig.eslint.json"],
         tsconfigRootDir: import.meta.dirname,
       },
+    },
+  },
+  {
+    // Frontera hexagonal: el dominio no puede importar infraestructura
+    files: ["src/domain/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            { group: ["fastify", "fastify/*"], message: "Domain must not depend on Fastify (HTTP adapter)." },
+            { group: ["kysely", "kysely/*"], message: "Domain must not depend on Kysely (DB adapter)." },
+            { group: ["pg", "pg/*"], message: "Domain must not depend on pg (DB adapter)." },
+            { group: ["**/adapters/**"], message: "Domain must not import from adapters." },
+            { group: ["**/config/**"], message: "Domain must not import from config." },
+            { group: ["**/application/**"], message: "Domain must not import from application layer." },
+          ],
+        },
+      ],
     },
   },
   {
