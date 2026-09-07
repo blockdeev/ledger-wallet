@@ -58,3 +58,13 @@ export class OverdraftError extends DomainError {
     );
   }
 }
+
+/** Se lanza cuando un posting referencia una cuenta que no existe en el AccountLookup. */
+export class UnknownAccountError extends DomainError {
+  constructor(accountId: string) {
+    super(
+      `Unknown account: '${accountId}' is not registered in the account lookup. ` +
+        `All accounts referenced by postings must be known.`
+    );
+  }
+}
