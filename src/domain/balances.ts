@@ -1,7 +1,7 @@
 import { Money } from "./money.js";
 import { Account } from "./account.js";
 import { LedgerTransaction } from "./ledger-transaction.js";
-import { OverdraftError } from "./errors.js";
+import { OverdraftError, UnknownAccountError } from "./errors.js";
 
 /**
  * Mapa de saldos: accountId -> Money (saldo actual).
@@ -20,12 +20,17 @@ export type AccountLookup = (accountId: string) => Account | undefined;
  *
  * Semántica:
  *  - Inmutable: el mapa original NO se modifica.
- *  - Todo-o-nada: si alguna cuenta sin permiso de sobregiro quedaría negativa,
- *    se lanza OverdraftError y los saldos originales se mantienen intactos.
+ *  - Todo-o-nada: si alguna validación falla, se lanza el error correspondiente
+ *    y los saldos originales se mantienen intactos.
  *  - Cuenta sin saldo previo: arranca en Money.zero(currency de la transacción).
- *  - Cuenta desconocida (lookup retorna undefined): sin info de política, NO se
- *    aplica restricción de sobregiro. Se aplica el cambio sin validar.
+ *  - Cuenta desconocida (lookup retorna undefined): lanza UnknownAccountError.
+ *    TODAS las cuentas referenciadas por postings deben estar en el lookup.
  *
+ * Orden de validaciones:
+ *  1. Existencia de cuentas (UnknownAccountError si alguna no está en el lookup).
+ *  2. Política de sobregiro (OverdraftError si una CUSTOMER_WALLET quedaría negativa).
+ *
+ * @throws UnknownAccountError si algún posting referencia una cuenta desconocida.
  * @throws OverdraftError si una CUSTOMER_WALLET quedaría con saldo negativo.
  */
 export function applyTransaction(
@@ -41,6 +46,15 @@ export function applyTransaction(
   }
   const currency = firstPosting.amount.currency;
 
+  // Validación 1: todas las cuentas referenciadas por postings deben existir en el lookup.
+  // Esto va ANTES de calcular saldos candidatos (todo-o-nada: si alguna falta, no se aplica nada).
+  for (const posting of tx.postings) {
+    const account = lookup(posting.accountId);
+    if (account === undefined) {
+      throw new UnknownAccountError(posting.accountId);
+    }
+  }
+
   // Calcular los nuevos saldos candidatos (sin aplicar aún)
   const draft = new Map<string, Money>(balances);
 
@@ -50,14 +64,15 @@ export function applyTransaction(
     draft.set(posting.accountId, newBalance);
   }
 
-  // Validar política de sobregiro para cada cuenta afectada
+  // Validación 2: política de sobregiro para cada cuenta afectada.
+  // En este punto sabemos que todas las cuentas existen (validación 1 ya pasó).
   for (const posting of tx.postings) {
     const newBalance = draft.get(posting.accountId);
     if (!newBalance) continue; // no debería ocurrir
 
     if (newBalance.isNegative()) {
       const account = lookup(posting.accountId);
-      // Si la cuenta es conocida y NO permite negativos: OverdraftError
+      // account siempre es defined aquí (validación 1 lo garantiza)
       if (account !== undefined && !account.allowsNegativeBalance()) {
         throw new OverdraftError(posting.accountId);
       }

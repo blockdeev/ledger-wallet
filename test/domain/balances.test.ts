@@ -4,7 +4,7 @@ import { createTransaction } from "../../src/domain/ledger-transaction.js";
 import { createPosting } from "../../src/domain/posting.js";
 import { Money } from "../../src/domain/money.js";
 import { Account, AccountType, createAccount } from "../../src/domain/account.js";
-import { OverdraftError } from "../../src/domain/errors.js";
+import { OverdraftError, UnknownAccountError } from "../../src/domain/errors.js";
 
 // Helper to create a simple 2-way transfer transaction
 function makeTransferTx(
@@ -154,9 +154,8 @@ describe("applyTransaction — overdraft protection", () => {
 });
 
 describe("applyTransaction — unknown account (no lookup entry)", () => {
-  it("treats unknown account as if it allows negative (no info to enforce)", () => {
-    // When a lookup returns undefined, we conservatively assume it's unknown
-    // and skip overdraft check. This behavior is documented in Decision section.
+  it("throws UnknownAccountError when lookup returns undefined for any posting account", () => {
+    // All accounts referenced by postings must be known to the lookup.
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const lookup = (_id: string): Account | undefined => undefined;
     const balances = new Map<string, Money>([
@@ -164,9 +163,25 @@ describe("applyTransaction — unknown account (no lookup entry)", () => {
       ["acc-b", Money.fromMinor(1000n, "ARS")],
     ]);
     const tx = makeTransferTx("acc-a", "acc-b", 200n);
-    // Should not throw — no account info means no overdraft enforcement
-    const newBalances = applyTransaction(balances, tx, lookup);
-    expect(newBalances.get("acc-a")?.minor).toBe(800n);
-    expect(newBalances.get("acc-b")?.minor).toBe(1200n);
+    expect(() => applyTransaction(balances, tx, lookup)).toThrowError(UnknownAccountError);
+  });
+
+  it("does not modify original balances when UnknownAccountError is thrown", () => {
+    const knownAccount = createAccount("acc-a", "ARS", AccountType.SYSTEM_CLEARING);
+    const lookup = makeLookup([knownAccount]); // acc-b unknown
+    const balances = new Map<string, Money>([
+      ["acc-a", Money.fromMinor(1000n, "ARS")],
+      ["acc-b", Money.fromMinor(500n, "ARS")],
+    ]);
+    const tx = makeTransferTx("acc-a", "acc-b", 200n);
+
+    try {
+      applyTransaction(balances, tx, lookup);
+    } catch {
+      // expected
+    }
+
+    expect(balances.get("acc-a")?.minor).toBe(1000n);
+    expect(balances.get("acc-b")?.minor).toBe(500n);
   });
 });
