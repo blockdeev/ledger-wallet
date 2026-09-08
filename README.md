@@ -15,7 +15,9 @@ Pull Request con el CI en verde.
 - [x] **Fase 0 — Walking skeleton.** Compila, testea, linta, bootea y buildea en Docker con CI.
 - [x] **Fase 1 — Núcleo de dominio (TDD).** `Money`, `Account`, `Posting`, `LedgerTransaction` y sus invariantes; 100% test-first.
 - [x] **Fase 2 — Ports y casos de uso.** Puertos de salida (`AccountRepository`, `TransactionRepository`), casos de uso (`CreateAccount`, `Transfer`, `GetBalance`), adapters in-memory, derivación de saldo desde historial. Tests end-to-end sin DB.
-- [ ] **Fase 3 — Persistencia.** PostgreSQL + Kysely, migraciones.
+- [ ] **Fase 3 — Persistencia.**
+  - [x] **Fase 3a — Adapters Postgres detrás de los puertos.** `PostgresAccountRepository` y `PostgresTransactionRepository` sobre PostgreSQL 16 + Kysely, implementando los mismos puertos de Fase 2. Migraciones versionadas en código; validación fail-fast de `config/env`; contract tests reutilizables que corren tanto sobre in-memory como sobre Postgres (testcontainers). El saldo sigue derivándose del historial; atomicidad e idempotencia en Fase 3b.
+  - [ ] **Fase 3b — Endpoints, idempotencia y concurrencia.** HTTP real, idempotencia de transferencias, locking.
 - [ ] **Fase 4 — Observabilidad.** Logging estructurado, tracing, métricas.
 - [ ] **Fase 5 — CI/CD y despliegue.**
 - [ ] **Fase 6 — Integración AWS** (SQS / SNS / S3).
@@ -120,11 +122,25 @@ npm start           # correr el build
 ### Calidad
 
 ```bash
-npm run typecheck     # tsc --noEmit
-npm run lint          # ESLint (incluye la regla de frontera del dominio)
-npm test              # Vitest (una corrida)
-npm run test:watch    # TDD
-npm run test:coverage # cobertura del dominio
+npm run typecheck         # tsc --noEmit
+npm run lint              # ESLint (incluye la regla de frontera del dominio)
+npm test                  # Vitest unit (sin Docker; rápido)
+npm run test:watch        # TDD
+npm run test:coverage     # cobertura de domain y application (umbral 90%)
+npm run test:integration  # tests de integración con testcontainers (requiere Docker)
+```
+
+### Migraciones
+
+```bash
+npm run migrate           # aplica migraciones pendientes contra DATABASE_URL
+```
+
+Requiere `DATABASE_URL` en el entorno. Ejemplo:
+
+```bash
+docker compose up -d db
+DATABASE_URL=postgresql://ledger:ledger@localhost:5432/ledger npm run migrate
 ```
 
 ### Docker
@@ -142,11 +158,20 @@ Desarrollado por TDD estricto (red → green → refactor, Conventional Commits)
 
 - **Dominio** (`src/domain/`): ~97% líneas, 100% funciones.
 - **Aplicación** (`src/application/`): 100% líneas, 100% funciones.
-- **Adapters in-memory**: cubiertos por tests unitarios propios.
+- **Adapters in-memory**: cubiertos por tests unitarios propios + contract tests.
+- **Adapters Postgres**: validados por tests de integración con testcontainers (requieren Docker).
 
 La frontera hexagonal tiene verificación doble: el lint falla si `src/domain/**` o
 `src/application/**` importan infraestructura o adapters. Los tests de aplicación corren
 end-to-end con adapters in-memory, sin base de datos.
+
+### Contract tests
+
+`test/adapters/contract/` define el comportamiento esperado de cada puerto
+(`AccountRepository`, `TransactionRepository`). El mismo contrato corre contra el adapter
+in-memory (en `npm test`, sin Docker) y contra el adapter Postgres (en `npm run
+test:integration`, con testcontainers). Esto demuestra que Postgres es un drop-in del
+puerto: la abstracción hexagonal funciona.
 
 ## Decisiones de arquitectura (ADRs)
 
@@ -160,6 +185,7 @@ Ver [`docs/adr/`](docs/adr):
 - `0006` — Representación monetaria (`bigint`)
 - `0007` — Modelo de partida doble
 - `0008` — Capa de aplicación (puertos, DIP, derivación de saldo)
+- `0009` — Persistencia (Postgres, Kysely, migraciones en código, testcontainers, contract test)
 
 ## Licencia
 

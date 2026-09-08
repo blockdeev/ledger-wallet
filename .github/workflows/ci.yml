@@ -33,5 +33,8 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Integration tests (testcontainers)
+        run: npm run test:integration
+
       - name: Docker build
         run: docker build .
