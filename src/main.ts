@@ -1,8 +1,17 @@
 import { loadConfig } from "./config/env.js";
-import { buildApp } from "./adapters/inbound/http/app.js";
+import { compose } from "./composition.js";
 
 const config = loadConfig();
-const app = buildApp();
+const { app, db } = compose(config);
+
+// Manejo de señales de cierre graceful
+const shutdown = async () => {
+  await app.close();
+  await db.destroy();
+  process.exit(0);
+};
+process.on("SIGTERM", () => void shutdown());
+process.on("SIGINT", () => void shutdown());
 
 try {
   await app.listen({ port: config.port, host: "0.0.0.0" });

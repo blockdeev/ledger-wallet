@@ -17,7 +17,8 @@ Pull Request con el CI en verde.
 - [x] **Fase 2 — Ports y casos de uso.** Puertos de salida (`AccountRepository`, `TransactionRepository`), casos de uso (`CreateAccount`, `Transfer`, `GetBalance`), adapters in-memory, derivación de saldo desde historial. Tests end-to-end sin DB.
 - [ ] **Fase 3 — Persistencia.**
   - [x] **Fase 3a — Adapters Postgres detrás de los puertos.** `PostgresAccountRepository` y `PostgresTransactionRepository` sobre PostgreSQL 16 + Kysely, implementando los mismos puertos de Fase 2. Migraciones versionadas en código; validación fail-fast de `config/env`; contract tests reutilizables que corren tanto sobre in-memory como sobre Postgres (testcontainers). El saldo sigue derivándose del historial; atomicidad e idempotencia en Fase 3b.
-  - [ ] **Fase 3b — Endpoints, idempotencia y concurrencia.** HTTP real, idempotencia de transferencias, locking.
+  - [x] **Fase 3b — Endpoints HTTP y transferencias seguras bajo concurrencia.** Los tres casos de uso expuestos por HTTP (Fastify). Puerto `UnitOfWork` que envuelve `Transfer` en una transacción de DB con `SELECT ... FOR UPDATE ORDER BY id` para serializar transferencias concurrentes y eliminar el doble-gasto. Saldo derivado dentro de la transacción con lock. Sin idempotencia (Fase 3c).
+  - [ ] **Fase 3c — Idempotencia.** Header `Idempotency-Key`, constraint único, retry seguro.
 - [ ] **Fase 4 — Observabilidad.** Logging estructurado, tracing, métricas.
 - [ ] **Fase 5 — CI/CD y despliegue.**
 - [ ] **Fase 6 — Integración AWS** (SQS / SNS / S3).
@@ -149,8 +150,121 @@ DATABASE_URL=postgresql://ledger:ledger@localhost:5432/ledger npm run migrate
 docker compose up --build   # app + PostgreSQL
 ```
 
-Endpoint disponible hoy: `GET /health` → `{ "status": "ok" }`. Los endpoints de negocio
-llegan en fases posteriores.
+### Cómo correr en local (Fase 3b)
+
+```bash
+# 1. Levantar Postgres
+docker compose up -d db
+
+# 2. Aplicar migraciones
+DATABASE_URL=postgresql://ledger:ledger@localhost:5432/ledger npm run migrate
+
+# 3. Arrancar la app en modo dev
+DATABASE_URL=postgresql://ledger:ledger@localhost:5432/ledger PORT=3000 npm run dev
+```
+
+## API HTTP (Fase 3b)
+
+> **`minor` siempre como `string`** en request y response — nunca como `number` — para
+> preservar la precisión de `bigint` en valores que superan `Number.MAX_SAFE_INTEGER`.
+
+### `GET /health`
+
+```bash
+curl http://localhost:3000/health
+# {"status":"ok"}
+```
+
+### `POST /accounts`
+
+Crea una cuenta nueva. Falla con 409 si el `id` ya existe.
+
+```bash
+# Crear cuenta del sistema (puede ir negativa)
+curl -X POST http://localhost:3000/accounts \
+  -H "Content-Type: application/json" \
+  -d '{"id":"sys","currency":"ARS","type":"SYSTEM_CLEARING"}'
+# 201 → {"id":"sys","currency":"ARS","type":"SYSTEM_CLEARING"}
+
+# Crear wallet de cliente (no puede ir negativa)
+curl -X POST http://localhost:3000/accounts \
+  -H "Content-Type: application/json" \
+  -d '{"id":"wallet-1","currency":"ARS","type":"CUSTOMER_WALLET"}'
+# 201 → {"id":"wallet-1","currency":"ARS","type":"CUSTOMER_WALLET"}
+
+# Cuenta duplicada → 409
+curl -X POST http://localhost:3000/accounts \
+  -H "Content-Type: application/json" \
+  -d '{"id":"sys","currency":"ARS","type":"SYSTEM_CLEARING"}'
+# 409 → {"error":"conflict","message":"..."}
+```
+
+**Tipos de cuenta válidos:** `CUSTOMER_WALLET`, `SYSTEM_CLEARING`, `EXTERNAL`.
+
+### `POST /transfers`
+
+Transfiere fondos entre dos cuentas de forma atómica y segura bajo concurrencia.
+El `id` identifica la `LedgerTransaction`; debe ser único.
+
+```bash
+# Acreditar 10 000 ARS desde sys hacia wallet-1
+curl -X POST http://localhost:3000/transfers \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "tx-seed-001",
+    "fromAccountId": "sys",
+    "toAccountId": "wallet-1",
+    "amount": { "minor": "1000000", "currency": "ARS" }
+  }'
+# 201 → {
+#   "id": "tx-seed-001",
+#   "occurredAt": "2026-09-08T14:00:00.000Z",
+#   "postings": [
+#     { "accountId": "sys",      "amount": { "minor": "-1000000", "currency": "ARS" } },
+#     { "accountId": "wallet-1", "amount": { "minor": "1000000",  "currency": "ARS" } }
+#   ]
+# }
+
+# Sobregiro en CUSTOMER_WALLET → 422
+curl -X POST http://localhost:3000/transfers \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "tx-overdraft",
+    "fromAccountId": "wallet-1",
+    "toAccountId": "sys",
+    "amount": { "minor": "9999999999", "currency": "ARS" }
+  }'
+# 422 → {"error":"overdraft","message":"..."}
+
+# Cuenta desconocida → 404
+curl -X POST http://localhost:3000/transfers \
+  -H "Content-Type: application/json" \
+  -d '{"id":"tx-x","fromAccountId":"ghost","toAccountId":"wallet-1","amount":{"minor":"100","currency":"ARS"}}'
+# 404 → {"error":"not_found","message":"..."}
+```
+
+### `GET /accounts/:id/balance`
+
+Devuelve el saldo actual derivado del historial de transacciones.
+
+```bash
+curl http://localhost:3000/accounts/wallet-1/balance
+# 200 → {"accountId":"wallet-1","balance":{"minor":"1000000","currency":"ARS"}}
+
+# Cuenta inexistente → 404
+curl http://localhost:3000/accounts/ghost/balance
+# 404 → {"error":"not_found","message":"..."}
+```
+
+### Mapeo de errores HTTP
+
+| Condición                          | Status | `error`      |
+|------------------------------------|--------|--------------|
+| Body inválido / tipo desconocido   | 400    | `bad_request`|
+| Cuenta ya existe                   | 409    | `conflict`   |
+| Cuenta no encontrada               | 404    | `not_found`  |
+| Sobregiro en `CUSTOMER_WALLET`     | 422    | `overdraft`  |
+| Error interno                      | 500    | —            |
 
 ## Tests
 
@@ -186,6 +300,7 @@ Ver [`docs/adr/`](docs/adr):
 - `0007` — Modelo de partida doble
 - `0008` — Capa de aplicación (puertos, DIP, derivación de saldo)
 - `0009` — Persistencia (Postgres, Kysely, migraciones en código, testcontainers, contract test)
+- `0010` — Concurrencia y atomicidad (UnitOfWork port, `FOR UPDATE ORDER BY id`, saldo derivado con lock)
 
 ## Licencia
 
