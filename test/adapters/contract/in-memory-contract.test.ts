@@ -17,4 +17,7 @@ import { runTransactionRepositoryContract } from "./transaction-repository.contr
 
 // In-memory: cada test recibe su propia instancia (makeRepo crea una nueva)
 runAccountRepositoryContract(() => new InMemoryAccountRepository());
-runTransactionRepositoryContract(() => new InMemoryTransactionRepository());
+runTransactionRepositoryContract(() => ({
+  txRepo: new InMemoryTransactionRepository(),
+  accountRepo: new InMemoryAccountRepository(),
+}));

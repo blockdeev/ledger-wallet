@@ -89,7 +89,10 @@ describe("PostgresTransactionRepository (integration)", () => {
   });
 
   runTransactionRepositoryContract(
-    () => new PostgresTransactionRepository(db),
+    () => ({
+      txRepo: new PostgresTransactionRepository(db),
+      accountRepo: new PostgresAccountRepository(db),
+    }),
     { testStableOrder: true } // Postgres garantiza orden determinista con ORDER BY
   );
 });
