@@ -4,6 +4,7 @@ import { GetBalance } from "../../src/application/use-cases/get-balance.js";
 import { CreateAccount } from "../../src/application/use-cases/create-account.js";
 import { InMemoryAccountRepository } from "../../src/adapters/outbound/persistence/in-memory/in-memory-account-repository.js";
 import { InMemoryTransactionRepository } from "../../src/adapters/outbound/persistence/in-memory/in-memory-transaction-repository.js";
+import { InMemoryUnitOfWork } from "../../src/adapters/outbound/persistence/in-memory/in-memory-unit-of-work.js";
 import { AccountType } from "../../src/domain/account.js";
 import { Money } from "../../src/domain/money.js";
 import { AccountNotFoundError } from "../../src/application/errors.js";
@@ -12,6 +13,7 @@ import { OverdraftError } from "../../src/domain/errors.js";
 describe("Transfer use case", () => {
   let accountRepo: InMemoryAccountRepository;
   let txRepo: InMemoryTransactionRepository;
+  let uow: InMemoryUnitOfWork;
   let transfer: Transfer;
   let getBalance: GetBalance;
   let createAccount: CreateAccount;
@@ -19,7 +21,8 @@ describe("Transfer use case", () => {
   beforeEach(() => {
     accountRepo = new InMemoryAccountRepository();
     txRepo = new InMemoryTransactionRepository();
-    transfer = new Transfer(accountRepo, txRepo);
+    uow = new InMemoryUnitOfWork(accountRepo, txRepo);
+    transfer = new Transfer(uow);
     getBalance = new GetBalance(accountRepo, txRepo);
     createAccount = new CreateAccount(accountRepo);
   });

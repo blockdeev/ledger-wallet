@@ -23,9 +23,10 @@ export class PostgresTransactionRepository implements TransactionRepository {
   async append(tx: LedgerTransaction): Promise<void> {
     const { txRow, postingRows } = transactionToRows(tx);
 
-    await this.db.transaction().execute(async (trx) => {
+    // Inserta cabecera + postings sobre un executor dado (Kysely o Transaction).
+    const insert = async (executor: Kysely<Database>): Promise<void> => {
       // Insertar cabecera de la transacción
-      await trx
+      await executor
         .insertInto("ledger_transactions")
         .values({
           id: txRow.id,
@@ -34,7 +35,7 @@ export class PostgresTransactionRepository implements TransactionRepository {
         .execute();
 
       // Insertar todos los postings en la misma transacción de DB (todo-o-nada)
-      await trx
+      await executor
         .insertInto("postings")
         .values(
           postingRows.map((p) => ({
@@ -45,7 +46,18 @@ export class PostgresTransactionRepository implements TransactionRepository {
           }))
         )
         .execute();
-    });
+    };
+
+    // Si ya estamos dentro de una transacción (p. ej. invocados por el UnitOfWork
+    // de Transfer), reusamos ese executor: Kysely no permite abrir una transacción
+    // anidada sobre una Transaction. Si nos usan de forma standalone (contract
+    // tests, uso directo del repo), abrimos nuestra propia transacción para
+    // mantener la atomicidad todo-o-nada de la cabecera + los postings.
+    if (this.db.isTransaction) {
+      await insert(this.db);
+    } else {
+      await this.db.transaction().execute(insert);
+    }
   }
 
   async listByAccount(accountId: string): Promise<LedgerTransaction[]> {
