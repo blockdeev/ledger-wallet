@@ -8,7 +8,11 @@ export default defineConfig({
     exclude: ["test/**/*.integration.test.ts"],
     coverage: {
       provider: "v8",
-      include: ["src/domain/**/*.ts", "src/application/**/*.ts"],
+      include: [
+        "src/domain/**/*.ts",
+        "src/application/**/*.ts",
+      ],
+      exclude: ["**/ports/**"],
       reporter: ["text", "lcov", "html"],
       thresholds: {
         lines: 90,

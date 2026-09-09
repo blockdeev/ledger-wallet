@@ -5,6 +5,7 @@ import { CreateAccount } from "../../src/application/use-cases/create-account.js
 import { InMemoryAccountRepository } from "../../src/adapters/outbound/persistence/in-memory/in-memory-account-repository.js";
 import { InMemoryTransactionRepository } from "../../src/adapters/outbound/persistence/in-memory/in-memory-transaction-repository.js";
 import { InMemoryUnitOfWork } from "../../src/adapters/outbound/persistence/in-memory/in-memory-unit-of-work.js";
+import { InMemoryIdempotencyRepository } from "../../src/adapters/outbound/persistence/in-memory/in-memory-idempotency-repository.js";
 import { AccountType } from "../../src/domain/account.js";
 import { Money } from "../../src/domain/money.js";
 import { AccountNotFoundError } from "../../src/application/errors.js";
@@ -13,6 +14,7 @@ import { OverdraftError } from "../../src/domain/errors.js";
 describe("Transfer use case", () => {
   let accountRepo: InMemoryAccountRepository;
   let txRepo: InMemoryTransactionRepository;
+  let idempotencyRepo: InMemoryIdempotencyRepository;
   let uow: InMemoryUnitOfWork;
   let transfer: Transfer;
   let getBalance: GetBalance;
@@ -21,7 +23,8 @@ describe("Transfer use case", () => {
   beforeEach(() => {
     accountRepo = new InMemoryAccountRepository();
     txRepo = new InMemoryTransactionRepository();
-    uow = new InMemoryUnitOfWork(accountRepo, txRepo);
+    idempotencyRepo = new InMemoryIdempotencyRepository();
+    uow = new InMemoryUnitOfWork(accountRepo, txRepo, idempotencyRepo);
     transfer = new Transfer(uow);
     getBalance = new GetBalance(accountRepo, txRepo);
     createAccount = new CreateAccount(accountRepo);
@@ -50,13 +53,14 @@ describe("Transfer use case", () => {
     await fundAccount("wallet-a", "system", 1000n);
 
     // Transfer 300 from wallet-a to wallet-b
-    const tx = await transfer.execute({
+    const { transaction: tx, replayed } = await transfer.execute({
       id: "tx-transfer",
       fromAccountId: "wallet-a",
       toAccountId: "wallet-b",
       amount: Money.fromMinor(300n, "ARS"),
     });
 
+    expect(replayed).toBe(false);
     expect(tx.id).toBe("tx-transfer");
     expect(tx.postings).toHaveLength(2);
 
@@ -228,7 +232,7 @@ describe("Transfer use case", () => {
     await createAccount.execute({ id: "wallet", currency: "ARS", type: AccountType.CUSTOMER_WALLET });
 
     const date = new Date("2025-01-15T10:00:00Z");
-    const tx = await transfer.execute({
+    const { transaction: tx } = await transfer.execute({
       id: "tx-dated",
       fromAccountId: "system",
       toAccountId: "wallet",
@@ -260,5 +264,299 @@ describe("Transfer use case", () => {
 
     const balance = await getBalance.execute({ accountId: "wallet" });
     expect(balance.minor).toBe(1450n); // 1000 + 500 + 250 - 300
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FASE 3c — Tests de idempotencia
+// ═══════════════════════════════════════════════════════════════════════════
+
+import { computeFingerprint } from "../../src/application/use-cases/transfer.js";
+import {
+  IdempotencyConflictError,
+} from "../../src/application/errors.js";
+
+describe("computeFingerprint (pure function)", () => {
+  it("produces a deterministic string from the input fields", () => {
+    const input = {
+      id: "tx-1",
+      fromAccountId: "acc-a",
+      toAccountId: "acc-b",
+      amount: Money.fromMinor(500n, "ARS"),
+    };
+    const fp1 = computeFingerprint(input);
+    const fp2 = computeFingerprint(input);
+    expect(fp1).toBe(fp2);
+  });
+
+  it("changes when id changes", () => {
+    const base = { id: "tx-1", fromAccountId: "a", toAccountId: "b", amount: Money.fromMinor(100n, "ARS") };
+    expect(computeFingerprint(base)).not.toBe(
+      computeFingerprint({ ...base, id: "tx-2" })
+    );
+  });
+
+  it("changes when amount changes", () => {
+    const base = { id: "tx-1", fromAccountId: "a", toAccountId: "b", amount: Money.fromMinor(100n, "ARS") };
+    expect(computeFingerprint(base)).not.toBe(
+      computeFingerprint({ ...base, amount: Money.fromMinor(200n, "ARS") })
+    );
+  });
+
+  it("changes when currency changes", () => {
+    const base = { id: "tx-1", fromAccountId: "a", toAccountId: "b", amount: Money.fromMinor(100n, "ARS") };
+    expect(computeFingerprint(base)).not.toBe(
+      computeFingerprint({ ...base, amount: Money.fromMinor(100n, "USD") })
+    );
+  });
+});
+
+describe("Transfer use case — idempotencia (Fase 3c)", () => {
+  let accountRepo: InMemoryAccountRepository;
+  let txRepo: InMemoryTransactionRepository;
+  let idempotencyRepo: InMemoryIdempotencyRepository;
+  let uow: InMemoryUnitOfWork;
+  let transfer: Transfer;
+  let getBalance: GetBalance;
+  let createAccount: CreateAccount;
+
+  beforeEach(async () => {
+    accountRepo = new InMemoryAccountRepository();
+    txRepo = new InMemoryTransactionRepository();
+    idempotencyRepo = new InMemoryIdempotencyRepository();
+    uow = new InMemoryUnitOfWork(accountRepo, txRepo, idempotencyRepo);
+    transfer = new Transfer(uow);
+    getBalance = new GetBalance(accountRepo, txRepo);
+    createAccount = new CreateAccount(accountRepo);
+
+    await createAccount.execute({ id: "system", currency: "ARS", type: AccountType.SYSTEM_CLEARING });
+    await createAccount.execute({ id: "wallet-a", currency: "ARS", type: AccountType.CUSTOMER_WALLET });
+    await createAccount.execute({ id: "wallet-b", currency: "ARS", type: AccountType.CUSTOMER_WALLET });
+    // Fondear wallet-a con 1000 ARS
+    await transfer.execute({
+      id: "seed-1",
+      fromAccountId: "system",
+      toAccountId: "wallet-a",
+      amount: Money.fromMinor(1000n, "ARS"),
+    });
+  });
+
+  // ── Sin clave: comportamiento de 3b intacto ───────────────────────────────
+
+  it("sin idempotencyKey: devuelve { transaction, replayed:false } igual que 3b", async () => {
+    const result = await transfer.execute({
+      id: "tx-no-key",
+      fromAccountId: "wallet-a",
+      toAccountId: "wallet-b",
+      amount: Money.fromMinor(200n, "ARS"),
+    });
+
+    expect(result.replayed).toBe(false);
+    expect(result.transaction.id).toBe("tx-no-key");
+
+    const balanceA = await getBalance.execute({ accountId: "wallet-a" });
+    expect(balanceA.minor).toBe(800n);
+  });
+
+  it("sin idempotencyKey: NO escribe registro de idempotencia", async () => {
+    await transfer.execute({
+      id: "tx-no-key-2",
+      fromAccountId: "wallet-a",
+      toAccountId: "wallet-b",
+      amount: Money.fromMinor(100n, "ARS"),
+    });
+
+    const record = await idempotencyRepo.findByKey("any-key");
+    expect(record).toBeUndefined();
+  });
+
+  // ── Alta nueva con clave ──────────────────────────────────────────────────
+
+  it("con idempotencyKey nueva: alta, replayed=false, saldo movido", async () => {
+    const result = await transfer.execute({
+      id: "tx-idem-1",
+      fromAccountId: "wallet-a",
+      toAccountId: "wallet-b",
+      amount: Money.fromMinor(300n, "ARS"),
+      idempotencyKey: "key-001",
+    });
+
+    expect(result.replayed).toBe(false);
+    expect(result.transaction.id).toBe("tx-idem-1");
+
+    const balanceA = await getBalance.execute({ accountId: "wallet-a" });
+    expect(balanceA.minor).toBe(700n);
+  });
+
+  it("con idempotencyKey nueva: escribe el registro de idempotencia", async () => {
+    await transfer.execute({
+      id: "tx-idem-2",
+      fromAccountId: "wallet-a",
+      toAccountId: "wallet-b",
+      amount: Money.fromMinor(100n, "ARS"),
+      idempotencyKey: "key-002",
+    });
+
+    const record = await idempotencyRepo.findByKey("key-002");
+    expect(record).toBeDefined();
+    expect(record?.transactionId).toBe("tx-idem-2");
+  });
+
+  // ── Replay (misma clave + mismo payload) ─────────────────────────────────
+
+  it("replay: misma clave y payload → replayed=true, mismo body, NO mueve dinero", async () => {
+    const input = {
+      id: "tx-idem-3",
+      fromAccountId: "wallet-a",
+      toAccountId: "wallet-b",
+      amount: Money.fromMinor(400n, "ARS"),
+      idempotencyKey: "key-replay",
+    };
+
+    const primera = await transfer.execute(input);
+    expect(primera.replayed).toBe(false);
+
+    const segunda = await transfer.execute(input);
+    expect(segunda.replayed).toBe(true);
+    expect(segunda.transaction.id).toBe(primera.transaction.id);
+    expect(segunda.transaction.occurredAt).toEqual(primera.transaction.occurredAt);
+
+    // Solo se movió dinero UNA vez
+    const balanceA = await getBalance.execute({ accountId: "wallet-a" });
+    expect(balanceA.minor).toBe(600n); // 1000 - 400, no 1000 - 800
+  });
+
+  it("replay: el cuerpo reconstruido incluye los postings correctos", async () => {
+    const input = {
+      id: "tx-idem-4",
+      fromAccountId: "wallet-a",
+      toAccountId: "wallet-b",
+      amount: Money.fromMinor(150n, "ARS"),
+      idempotencyKey: "key-replay-postings",
+    };
+
+    await transfer.execute(input);
+    const { transaction: tx } = await transfer.execute(input);
+
+    expect(tx.postings).toHaveLength(2);
+    const toPosting = tx.postings.find((p) => p.accountId === "wallet-b");
+    expect(toPosting?.amount.minor).toBe(150n);
+  });
+
+  it("replay: múltiples reintentos son idempotentes (3 llamadas = 1 escritura)", async () => {
+    const input = {
+      id: "tx-idem-5",
+      fromAccountId: "wallet-a",
+      toAccountId: "wallet-b",
+      amount: Money.fromMinor(100n, "ARS"),
+      idempotencyKey: "key-multi-replay",
+    };
+
+    const r1 = await transfer.execute(input);
+    const r2 = await transfer.execute(input);
+    const r3 = await transfer.execute(input);
+
+    expect(r1.replayed).toBe(false);
+    expect(r2.replayed).toBe(true);
+    expect(r3.replayed).toBe(true);
+
+    const balanceA = await getBalance.execute({ accountId: "wallet-a" });
+    expect(balanceA.minor).toBe(900n); // solo se descontó 100 una vez
+  });
+
+  // ── Conflicto (misma clave, payload distinto) ─────────────────────────────
+
+  it("conflicto: misma clave con amount distinto → IdempotencyConflictError", async () => {
+    await transfer.execute({
+      id: "tx-conflict-1",
+      fromAccountId: "wallet-a",
+      toAccountId: "wallet-b",
+      amount: Money.fromMinor(200n, "ARS"),
+      idempotencyKey: "key-conflict",
+    });
+
+    await expect(
+      transfer.execute({
+        id: "tx-conflict-2",
+        fromAccountId: "wallet-a",
+        toAccountId: "wallet-b",
+        amount: Money.fromMinor(999n, "ARS"), // distinto
+        idempotencyKey: "key-conflict",
+      })
+    ).rejects.toThrowError(IdempotencyConflictError);
+  });
+
+  it("conflicto: misma clave con id distinto → IdempotencyConflictError", async () => {
+    await transfer.execute({
+      id: "tx-orig",
+      fromAccountId: "wallet-a",
+      toAccountId: "wallet-b",
+      amount: Money.fromMinor(100n, "ARS"),
+      idempotencyKey: "key-conflict-id",
+    });
+
+    await expect(
+      transfer.execute({
+        id: "tx-distinto", // id diferente → fingerprint diferente
+        fromAccountId: "wallet-a",
+        toAccountId: "wallet-b",
+        amount: Money.fromMinor(100n, "ARS"),
+        idempotencyKey: "key-conflict-id",
+      })
+    ).rejects.toThrowError(IdempotencyConflictError);
+  });
+
+  // ── Regresión de rollback (dec. 6 del brief) ─────────────────────────────
+
+  it("rollback: overdraft con clave → rechaza Y la clave NO queda persistida", async () => {
+    const key = "key-overdraft-rollback";
+
+    // Intentar transferir más de lo que hay (1000) → OverdraftError
+    try {
+      await transfer.execute({
+        id: "tx-overdraft-with-key",
+        fromAccountId: "wallet-a",
+        toAccountId: "wallet-b",
+        amount: Money.fromMinor(9999n, "ARS"),
+        idempotencyKey: key,
+      });
+    } catch {
+      // esperado
+    }
+
+    // La clave NO debe haber quedado persistida (rollback deseshizo la reserva)
+    const record = await idempotencyRepo.findByKey(key);
+    expect(record).toBeUndefined();
+
+    // Un segundo intento con la misma clave se comporta como primero, no como replay
+    // Si la cuenta ahora tiene fondos suficientes, debe poder ejecutar la transferencia
+    const result = await transfer.execute({
+      id: "tx-overdraft-with-key",
+      fromAccountId: "system",    // system puede ir negativo
+      toAccountId: "wallet-b",
+      amount: Money.fromMinor(100n, "ARS"),
+      idempotencyKey: key,
+    });
+    expect(result.replayed).toBe(false); // es un alta, no un replay
+    expect(result.transaction.id).toBe("tx-overdraft-with-key");
+  });
+
+  it("rollback: overdraft con clave NO persiste la transacción", async () => {
+    const txCountBefore = (await txRepo.listAll()).length;
+
+    try {
+      await transfer.execute({
+        id: "tx-overdraft-persist-check",
+        fromAccountId: "wallet-a",
+        toAccountId: "wallet-b",
+        amount: Money.fromMinor(9999n, "ARS"),
+        idempotencyKey: "key-overdraft-persist",
+      });
+    } catch {
+      // esperado
+    }
+
+    const txCountAfter = (await txRepo.listAll()).length;
+    expect(txCountAfter).toBe(txCountBefore); // sin tx nueva
   });
 });

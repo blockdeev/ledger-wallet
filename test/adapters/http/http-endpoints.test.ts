@@ -14,6 +14,7 @@ import { buildApp } from "../../../src/adapters/inbound/http/app.js";
 import { InMemoryAccountRepository } from "../../../src/adapters/outbound/persistence/in-memory/in-memory-account-repository.js";
 import { InMemoryTransactionRepository } from "../../../src/adapters/outbound/persistence/in-memory/in-memory-transaction-repository.js";
 import { InMemoryUnitOfWork } from "../../../src/adapters/outbound/persistence/in-memory/in-memory-unit-of-work.js";
+import { InMemoryIdempotencyRepository } from "../../../src/adapters/outbound/persistence/in-memory/in-memory-idempotency-repository.js";
 import { CreateAccount } from "../../../src/application/use-cases/create-account.js";
 import { Transfer } from "../../../src/application/use-cases/transfer.js";
 import { GetBalance } from "../../../src/application/use-cases/get-balance.js";
@@ -24,7 +25,8 @@ import { AccountType } from "../../../src/domain/account.js";
 function makeApp(): FastifyInstance {
   const accountRepo = new InMemoryAccountRepository();
   const txRepo = new InMemoryTransactionRepository();
-  const uow = new InMemoryUnitOfWork(accountRepo, txRepo);
+  const idempotencyRepo = new InMemoryIdempotencyRepository();
+  const uow = new InMemoryUnitOfWork(accountRepo, txRepo, idempotencyRepo);
 
   const createAccount = new CreateAccount(accountRepo);
   const transfer = new Transfer(uow);
@@ -386,5 +388,195 @@ describe("HTTP endpoints", () => {
     // makeApp() en beforeEach crea una instancia fresca; no hay datos de otros tests
     const res = await app.inject({ method: "GET", url: "/accounts/isolation-check/balance" });
     expect(res.statusCode).toBe(404);
+  });
+
+  // ── Idempotencia HTTP (Fase 3c) ────────────────────────────────────────────
+
+  describe("POST /transfers — Idempotency-Key (Fase 3c)", () => {
+    async function seedAccounts() {
+      await app.inject({
+        method: "POST",
+        url: "/accounts",
+        payload: { id: "sys", currency: "ARS", type: "SYSTEM_CLEARING" },
+      });
+      await app.inject({
+        method: "POST",
+        url: "/accounts",
+        payload: { id: "wa", currency: "ARS", type: "CUSTOMER_WALLET" },
+      });
+      await app.inject({
+        method: "POST",
+        url: "/accounts",
+        payload: { id: "wb", currency: "ARS", type: "CUSTOMER_WALLET" },
+      });
+      // Fondear wa con 2000 ARS desde sys
+      await app.inject({
+        method: "POST",
+        url: "/transfers",
+        payload: {
+          id: "seed-http",
+          fromAccountId: "sys",
+          toAccountId: "wa",
+          amount: { minor: "2000", currency: "ARS" },
+        },
+      });
+    }
+
+    it("201: alta sin header Idempotency-Key sigue funcionando igual que 3b", async () => {
+      await seedAccounts();
+      const res = await app.inject({
+        method: "POST",
+        url: "/transfers",
+        payload: {
+          id: "tx-no-key-http",
+          fromAccountId: "wa",
+          toAccountId: "wb",
+          amount: { minor: "100", currency: "ARS" },
+        },
+      });
+      expect(res.statusCode).toBe(201);
+      const body = res.json<{ id: string }>();
+      expect(body.id).toBe("tx-no-key-http");
+    });
+
+    it("201: alta con Idempotency-Key nueva", async () => {
+      await seedAccounts();
+      const res = await app.inject({
+        method: "POST",
+        url: "/transfers",
+        headers: { "idempotency-key": "http-key-001" },
+        payload: {
+          id: "tx-http-idem-1",
+          fromAccountId: "wa",
+          toAccountId: "wb",
+          amount: { minor: "200", currency: "ARS" },
+        },
+      });
+      expect(res.statusCode).toBe(201);
+      const body = res.json<{ id: string }>();
+      expect(body.id).toBe("tx-http-idem-1");
+    });
+
+    it("200: replay — segunda petición con misma clave retorna mismo body", async () => {
+      await seedAccounts();
+      const payload = {
+        id: "tx-http-replay",
+        fromAccountId: "wa",
+        toAccountId: "wb",
+        amount: { minor: "300", currency: "ARS" },
+      };
+
+      const r1 = await app.inject({
+        method: "POST",
+        url: "/transfers",
+        headers: { "idempotency-key": "http-key-replay" },
+        payload,
+      });
+      expect(r1.statusCode).toBe(201);
+
+      const r2 = await app.inject({
+        method: "POST",
+        url: "/transfers",
+        headers: { "idempotency-key": "http-key-replay" },
+        payload,
+      });
+      expect(r2.statusCode).toBe(200);
+
+      // Mismo body
+      expect(r2.json()).toEqual(r1.json());
+    });
+
+    it("200: replay devuelve los postings originales correctos", async () => {
+      await seedAccounts();
+      const payload = {
+        id: "tx-http-replay-postings",
+        fromAccountId: "wa",
+        toAccountId: "wb",
+        amount: { minor: "150", currency: "ARS" },
+      };
+
+      await app.inject({
+        method: "POST",
+        url: "/transfers",
+        headers: { "idempotency-key": "http-key-replay-postings" },
+        payload,
+      });
+
+      const r2 = await app.inject({
+        method: "POST",
+        url: "/transfers",
+        headers: { "idempotency-key": "http-key-replay-postings" },
+        payload,
+      });
+      expect(r2.statusCode).toBe(200);
+      const body = r2.json<{ postings: { accountId: string; amount: { minor: string } }[] }>();
+      const toPosting = body.postings.find((p) => p.accountId === "wb");
+      expect(toPosting?.amount.minor).toBe("150");
+    });
+
+    it("409: misma clave con payload distinto → idempotency_conflict", async () => {
+      await seedAccounts();
+
+      await app.inject({
+        method: "POST",
+        url: "/transfers",
+        headers: { "idempotency-key": "http-key-conflict" },
+        payload: {
+          id: "tx-conflict-orig",
+          fromAccountId: "wa",
+          toAccountId: "wb",
+          amount: { minor: "100", currency: "ARS" },
+        },
+      });
+
+      const res = await app.inject({
+        method: "POST",
+        url: "/transfers",
+        headers: { "idempotency-key": "http-key-conflict" },
+        payload: {
+          id: "tx-conflict-orig",
+          fromAccountId: "wa",
+          toAccountId: "wb",
+          amount: { minor: "999", currency: "ARS" }, // distinto
+        },
+      });
+      expect(res.statusCode).toBe(409);
+      const body = res.json<{ error: string }>();
+      expect(body.error).toBe("idempotency_conflict");
+    });
+
+    it("400: Idempotency-Key vacío → bad_request", async () => {
+      await seedAccounts();
+      const res = await app.inject({
+        method: "POST",
+        url: "/transfers",
+        headers: { "idempotency-key": "" },
+        payload: {
+          id: "tx-empty-key",
+          fromAccountId: "wa",
+          toAccountId: "wb",
+          amount: { minor: "100", currency: "ARS" },
+        },
+      });
+      expect(res.statusCode).toBe(400);
+      const body = res.json<{ error: string }>();
+      expect(body.error).toBe("bad_request");
+    });
+
+    it("400: Idempotency-Key solo whitespace → bad_request", async () => {
+      await seedAccounts();
+      const res = await app.inject({
+        method: "POST",
+        url: "/transfers",
+        headers: { "idempotency-key": "   " },
+        payload: {
+          id: "tx-ws-key",
+          fromAccountId: "wa",
+          toAccountId: "wb",
+          amount: { minor: "100", currency: "ARS" },
+        },
+      });
+      expect(res.statusCode).toBe(400);
+    });
   });
 });

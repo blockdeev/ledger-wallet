@@ -35,10 +35,19 @@ export interface PostingRow {
   currency: string;
 }
 
+export interface IdempotencyKeyRow {
+  key: string;
+  transaction_id: string;
+  fingerprint: string;
+  /** Generada por DEFAULT now() en DB */
+  created_at: Generated<Date>;
+}
+
 export interface Database {
   accounts: AccountRow;
   ledger_transactions: LedgerTransactionRow;
   postings: PostingRow;
+  idempotency_keys: IdempotencyKeyRow;
 }
 
 /**

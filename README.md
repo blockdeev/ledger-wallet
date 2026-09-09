@@ -144,6 +144,13 @@ docker compose up -d db
 DATABASE_URL=postgresql://ledger:ledger@localhost:5432/ledger npm run migrate
 ```
 
+Migraciones disponibles:
+
+| Nombre | Descripción |
+|---|---|
+| `0001_init` | Esquema inicial: `accounts`, `ledger_transactions`, `postings` |
+| `0002_idempotency_keys` | Tabla `idempotency_keys` para idempotencia de `POST /transfers` (Fase 3c) |
+
 ### Docker
 
 ```bash
@@ -206,8 +213,22 @@ curl -X POST http://localhost:3000/accounts \
 Transfiere fondos entre dos cuentas de forma atómica y segura bajo concurrencia.
 El `id` identifica la `LedgerTransaction`; debe ser único.
 
+**Idempotencia (Fase 3c):** el header opcional `Idempotency-Key` hace que la
+operación sea idempotente. Un reintento con la misma clave devuelve la
+transferencia original sin mover dinero. Dos requests concurrentes con la
+misma clave producen exactamente una escritura, con la perdedora haciendo
+replay. Ver [ADR 0011](docs/adr/0011-idempotencia.md).
+
+| Header `Idempotency-Key` | Comportamiento |
+|---|---|
+| Ausente | Idéntico a Fase 3b (201 siempre) |
+| Presente, vacío / whitespace | 400 `bad_request` |
+| Presente, clave nueva | 201 (alta nueva) |
+| Presente, clave repetida mismo payload | 200 (replay, mismo body) |
+| Presente, clave repetida payload distinto | 409 `idempotency_conflict` |
+
 ```bash
-# Acreditar 10 000 ARS desde sys hacia wallet-1
+# Alta normal sin idempotencia (igual que 3b)
 curl -X POST http://localhost:3000/transfers \
   -H "Content-Type: application/json" \
   -d '{
@@ -225,6 +246,42 @@ curl -X POST http://localhost:3000/transfers \
 #   ]
 # }
 
+# Alta con Idempotency-Key → 201
+curl -X POST http://localhost:3000/transfers \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: mi-clave-unica-001" \
+  -d '{
+    "id": "tx-idem-001",
+    "fromAccountId": "wallet-1",
+    "toAccountId": "wallet-2",
+    "amount": { "minor": "50000", "currency": "ARS" }
+  }'
+# 201 → { "id": "tx-idem-001", ... }
+
+# Reintento con la misma clave y mismo payload → 200 (replay, sin mover dinero)
+curl -X POST http://localhost:3000/transfers \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: mi-clave-unica-001" \
+  -d '{
+    "id": "tx-idem-001",
+    "fromAccountId": "wallet-1",
+    "toAccountId": "wallet-2",
+    "amount": { "minor": "50000", "currency": "ARS" }
+  }'
+# 200 → mismo body que el 201 anterior (sin doble-gasto)
+
+# Misma clave con payload distinto → 409
+curl -X POST http://localhost:3000/transfers \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: mi-clave-unica-001" \
+  -d '{
+    "id": "tx-idem-001",
+    "fromAccountId": "wallet-1",
+    "toAccountId": "wallet-2",
+    "amount": { "minor": "99999", "currency": "ARS" }
+  }'
+# 409 → {"error":"idempotency_conflict","message":"..."}
+
 # Sobregiro en CUSTOMER_WALLET → 422
 curl -X POST http://localhost:3000/transfers \
   -H "Content-Type: application/json" \
@@ -235,13 +292,12 @@ curl -X POST http://localhost:3000/transfers \
     "amount": { "minor": "9999999999", "currency": "ARS" }
   }'
 # 422 → {"error":"overdraft","message":"..."}
-
-# Cuenta desconocida → 404
-curl -X POST http://localhost:3000/transfers \
-  -H "Content-Type: application/json" \
-  -d '{"id":"tx-x","fromAccountId":"ghost","toAccountId":"wallet-1","amount":{"minor":"100","currency":"ARS"}}'
-# 404 → {"error":"not_found","message":"..."}
 ```
+
+**Nota:** si se usa `Idempotency-Key` con un request que falla (p. ej. 422 por
+sobregiro), la clave **no queda quemada**: el rollback de la transacción de DB
+deshace también la reserva de la clave, y un reintento legítimo puede volver a
+intentar la operación.
 
 ### `GET /accounts/:id/balance`
 
