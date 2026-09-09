@@ -2,7 +2,7 @@ import { Kysely } from "kysely";
 import { LedgerTransaction } from "../../../../domain/ledger-transaction.js";
 import { TransactionRepository } from "../../../../application/ports/transaction-repository.js";
 import { Database } from "./db.js";
-import { transactionToRows, groupPostingsByTransaction } from "./mapper.js";
+import { transactionToRows, groupPostingsByTransaction, rowsToTransaction } from "./mapper.js";
 
 /**
  * Adapter Postgres del puerto TransactionRepository.
@@ -58,6 +58,24 @@ export class PostgresTransactionRepository implements TransactionRepository {
     } else {
       await this.db.transaction().execute(insert);
     }
+  }
+
+  async findById(id: string): Promise<LedgerTransaction | undefined> {
+    const txRow = await this.db
+      .selectFrom("ledger_transactions")
+      .selectAll()
+      .where("id", "=", id)
+      .executeTakeFirst();
+
+    if (txRow === undefined) return undefined;
+
+    const postingRows = await this.db
+      .selectFrom("postings")
+      .select(["transaction_id", "account_id", "amount", "currency"])
+      .where("transaction_id", "=", id)
+      .execute();
+
+    return rowsToTransaction({ tx: txRow, postings: postingRows });
   }
 
   async listByAccount(accountId: string): Promise<LedgerTransaction[]> {

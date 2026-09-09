@@ -226,6 +226,45 @@ export function runTransactionRepositoryContract(
       expect(toPosting?.amount.minor).toBe(largeAmount);
     });
 
+    // ── findById ──────────────────────────────────────────────────────────────
+
+    it("findById returns the transaction when it exists", async () => {
+      const { txRepo, accountRepo } = await getRepos();
+      const tx = makeTx("tx-findbyid-1", "a", "b", 100n);
+      await appendTx(txRepo, accountRepo, tx);
+
+      const found = await txRepo.findById("tx-findbyid-1");
+      expect(found).toBeDefined();
+      expect(found?.id).toBe("tx-findbyid-1");
+    });
+
+    it("findById returns undefined when transaction does not exist", async () => {
+      const { txRepo } = await getRepos();
+      const result = await txRepo.findById("nonexistent-tx");
+      expect(result).toBeUndefined();
+    });
+
+    it("findById reconstructs postings faithfully", async () => {
+      const { txRepo, accountRepo } = await getRepos();
+      const tx = makeTx("tx-findbyid-postings", "acc-src", "acc-dst", 750n, "USD");
+      await appendTx(txRepo, accountRepo, tx);
+
+      const found = await txRepo.findById("tx-findbyid-postings");
+      expect(found?.postings).toHaveLength(2);
+      const dst = found?.postings.find((p) => p.accountId === "acc-dst");
+      expect(dst?.amount.minor).toBe(750n);
+      expect(dst?.amount.currency).toBe("USD");
+    });
+
+    it("findById returns undefined when repo has other transactions but not the one requested", async () => {
+      const { txRepo, accountRepo } = await getRepos();
+      const tx = makeTx("tx-findbyid-other", "x", "y", 50n);
+      await appendTx(txRepo, accountRepo, tx);
+
+      const result = await txRepo.findById("tx-does-not-exist");
+      expect(result).toBeUndefined();
+    });
+
     // Este test verifica el orden estable (by occurred_at, then id).
     // Solo se activa cuando el adapter garantiza orden determinista (Postgres, con ORDER BY).
     // El adapter in-memory preserva orden de inserción, que puede coincidir o no.

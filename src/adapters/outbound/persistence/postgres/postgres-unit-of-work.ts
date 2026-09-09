@@ -3,6 +3,7 @@ import { UnitOfWork, TransactionalContext } from "../../../../application/ports/
 import { Database } from "./db.js";
 import { PostgresAccountRepository } from "./postgres-account-repository.js";
 import { PostgresTransactionRepository } from "./postgres-transaction-repository.js";
+import { PostgresIdempotencyRepository } from "./postgres-idempotency-repository.js";
 
 /**
  * Implementación Postgres del puerto UnitOfWork.
@@ -31,10 +32,12 @@ export class PostgresUnitOfWork implements UnitOfWork {
       // Transaction<Database> extiende Kysely<Database>; asignación directa segura.
       const accounts = new PostgresAccountRepository(trx);
       const transactions = new PostgresTransactionRepository(trx);
+      const idempotency = new PostgresIdempotencyRepository(trx);
 
       const ctx: TransactionalContext = {
         accounts,
         transactions,
+        idempotency,
         lockAccounts: async (accountIds: string[]): Promise<void> => {
           if (accountIds.length === 0) return;
 

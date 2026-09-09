@@ -110,7 +110,7 @@ describe("Fase 3b – integración Postgres", () => {
     });
 
     // Transferir 2000 de wa a wb
-    const tx = await transfer.execute({
+    const { transaction: tx } = await transfer.execute({
       id: "tx-e2e",
       fromAccountId: "wa",
       toAccountId: "wb",

@@ -7,6 +7,8 @@ import { LedgerTransaction } from "../../domain/ledger-transaction.js";
 export interface TransactionRepository {
   /** Agrega una transacción al log. */
   append(tx: LedgerTransaction): Promise<void>;
+  /** Busca una transacción por id. Devuelve `undefined` si no existe. */
+  findById(id: string): Promise<LedgerTransaction | undefined>;
   /** Lista todas las transacciones donde participa una cuenta dada. */
   listByAccount(accountId: string): Promise<LedgerTransaction[]>;
   /** Lista todas las transacciones del ledger. */

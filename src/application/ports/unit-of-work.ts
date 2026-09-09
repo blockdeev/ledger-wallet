@@ -1,5 +1,6 @@
 import { AccountRepository } from "./account-repository.js";
 import { TransactionRepository } from "./transaction-repository.js";
+import { IdempotencyRepository } from "./idempotency-repository.js";
 
 /**
  * Contexto transaccional: versiones de los repositorios ligadas a una transacción de DB.
@@ -12,6 +13,8 @@ import { TransactionRepository } from "./transaction-repository.js";
 export interface TransactionalContext {
   accounts: AccountRepository;
   transactions: TransactionRepository;
+  /** Repositorio de claves de idempotencia ligado a la transacción de DB actual. */
+  idempotency: IdempotencyRepository;
   lockAccounts(accountIds: string[]): Promise<void>;
 }
 

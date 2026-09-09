@@ -1,5 +1,6 @@
 import { Migration } from "kysely/migration";
 import * as migration0001 from "./0001_init.js";
+import * as migration0002 from "./0002_idempotency_keys.js";
 
 /**
  * Mapa de migraciones en código (no FileMigrationProvider).
@@ -13,5 +14,9 @@ export const migrations: Record<string, Migration> = {
   "0001_init": {
     up: migration0001.up,
     down: migration0001.down,
+  },
+  "0002_idempotency_keys": {
+    up: migration0002.up,
+    down: migration0002.down,
   },
 };

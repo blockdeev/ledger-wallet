@@ -28,3 +28,33 @@ export class AccountAlreadyExistsError extends ApplicationError {
     super(`Account already exists: '${accountId}' is already registered.`);
   }
 }
+
+/**
+ * Señal interna: el adapter de idempotencia detectó una violación de unicidad
+ * al intentar insertar una clave que ya existe en el backing store.
+ *
+ * En Postgres se traduce desde SQLSTATE 23505 (unique_violation) dentro del
+ * adapter, NUNCA en la capa de aplicación (el puerto no importa pg).
+ * El use case Transfer la captura para reintentar el camino de replay.
+ * No debe llegar al HTTP en operación normal.
+ */
+export class DuplicateIdempotencyKeyError extends ApplicationError {
+  constructor(key: string) {
+    super(`Duplicate idempotency key: '${key}' already exists.`);
+  }
+}
+
+/**
+ * Se lanza cuando se recibe la misma Idempotency-Key con un payload distinto
+ * (fingerprint diferente). Indica que el cliente está reutilizando una clave
+ * para una operación diferente, lo cual es un error del cliente.
+ *
+ * → HTTP 409 Conflict (via error-mapper).
+ */
+export class IdempotencyConflictError extends ApplicationError {
+  constructor(key: string) {
+    super(
+      `Idempotency conflict: key '${key}' was already used with a different payload.`
+    );
+  }
+}
