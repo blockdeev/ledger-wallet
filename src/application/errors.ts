@@ -17,8 +17,10 @@ export class ApplicationError extends Error {
 
 /** Se lanza cuando se busca una cuenta por id y no existe en el repositorio. */
 export class AccountNotFoundError extends ApplicationError {
+  readonly accountId: string;
   constructor(accountId: string) {
     super(`Account not found: '${accountId}' does not exist in the repository.`);
+    this.accountId = accountId;
   }
 }
 

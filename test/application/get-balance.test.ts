@@ -7,6 +7,7 @@ import { createTransaction } from "../../src/domain/ledger-transaction.js";
 import { createPosting } from "../../src/domain/posting.js";
 import { Money } from "../../src/domain/money.js";
 import { AccountNotFoundError } from "../../src/application/errors.js";
+import { CapturingLogger } from "../support/capturing-logger.js";
 
 describe("GetBalance use case", () => {
   let accountRepo: InMemoryAccountRepository;
@@ -16,7 +17,7 @@ describe("GetBalance use case", () => {
   beforeEach(() => {
     accountRepo = new InMemoryAccountRepository();
     txRepo = new InMemoryTransactionRepository();
-    getBalance = new GetBalance(accountRepo, txRepo);
+    getBalance = new GetBalance(accountRepo, txRepo, new CapturingLogger());
   });
 
   it("returns Money.zero for an account with no transactions", async () => {

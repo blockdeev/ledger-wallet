@@ -9,6 +9,8 @@ import {
   IdempotencyConflictError,
 } from "../errors.js";
 import { deriveBalance } from "../balance-derivation.js";
+import { Logger } from "../ports/logger.js";
+import { OverdraftError } from "../../domain/errors.js";
 
 export interface TransferInput {
   /** Id de la LedgerTransaction a crear. */
@@ -67,7 +69,7 @@ export function computeFingerprint(input: TransferInput): string {
  *       - Ganador: INSERT ok → ejecuta transfer → { replayed:false }.
  *       - Perdedor: su INSERT bloquea hasta que el ganador commitea;
  *         recibe DuplicateIdempotencyKeyError → su tx de DB hace ROLLBACK
- *         → el use case CAPTURA y REINTENTA UNA VEZ en nueva transacción:
+ *         → el use case captura y ejecuta UN replay en nueva transacción:
  *         findByKey ahora encuentra el registro → replay → { replayed:true }.
  *
  * @throws AccountNotFoundError si alguna cuenta no existe.
@@ -75,31 +77,54 @@ export function computeFingerprint(input: TransferInput): string {
  * @throws IdempotencyConflictError si la misma clave se usa con payload distinto.
  */
 export class Transfer {
-  constructor(private readonly uow: UnitOfWork) {}
+  constructor(
+    private readonly uow: UnitOfWork,
+    private readonly logger: Logger
+  ) {}
 
   async execute(input: TransferInput): Promise<TransferResult> {
     // Sin clave de idempotencia → comportamiento exacto de 3b
     if (input.idempotencyKey === undefined) {
       return this.uow.transaction(async (ctx) => {
-        const transaction = await this.executeTransfer(ctx, input);
-        return { transaction, replayed: false };
+        try {
+          const transaction = await this.executeTransfer(ctx, input);
+          this.logger.info("transfer.created", {
+            transactionId: transaction.id,
+            fromAccountId: input.fromAccountId,
+            toAccountId: input.toAccountId,
+            amountMinor: input.amount.minor.toString(),
+            currency: input.amount.currency,
+          });
+          return { transaction, replayed: false };
+        } catch (err) {
+          this.logTransferError(err, input);
+          throw err;
+        }
       });
     }
 
     // Con clave de idempotencia → reserve-first
-    return this.executeIdempotent(input, input.idempotencyKey, false);
+    return this.executeIdempotent(input, input.idempotencyKey);
   }
 
   /**
-   * Flujo idempotente con reserve-first.
+   * Flujo idempotente con reserve-first, refactorizado sin recursión ni flag isRetry.
    *
-   * @param isRetry - `true` cuando se llama desde el catch de DuplicateIdempotencyKeyError.
-   *   En el reintento, save() no se llama de nuevo (evita reingresar al catch).
+   * Intento 1 (transacción normal):
+   *   - Si existe registro con misma fingerprint → replay inmediato.
+   *   - Si existe registro con fingerprint distinta → IdempotencyConflictError.
+   *   - Si no existe → reservar (INSERT) y ejecutar transferencia.
+   *   - Si el INSERT falla con DuplicateIdempotencyKeyError → la TX hace ROLLBACK;
+   *     caemos en el bloque catch y ejecutamos el replay en una NUEVA transacción.
+   *
+   * Intento 2 (solo replay, en nueva transacción):
+   *   - Ocurre únicamente ante DuplicateIdempotencyKeyError del intento 1.
+   *   - Nunca reserva ni transfiere; solo lee el registro ya escrito por el ganador
+   *     y devuelve el replay. Ver replayFromExisting().
    */
   private async executeIdempotent(
     input: TransferInput,
-    key: string,
-    isRetry: boolean
+    key: string
   ): Promise<TransferResult> {
     try {
       return await this.uow.transaction(async (ctx) => {
@@ -107,44 +132,106 @@ export class Transfer {
         const existing = await ctx.idempotency.findByKey(key);
 
         if (existing !== undefined) {
-          const fingerprint = computeFingerprint(input);
-          if (existing.fingerprint !== fingerprint) {
-            throw new IdempotencyConflictError(key);
-          }
-          // Replay: devolver la transacción original sin mover dinero
-          const tx = await ctx.transactions.findById(existing.transactionId);
-          if (tx === undefined) {
-            // No debería ocurrir si la escritura fue atómica; es un error interno
-            throw new Error(
-              `Idempotency record found for key '${key}' but transaction '${existing.transactionId}' not found.`
-            );
-          }
-          return { transaction: tx, replayed: true };
+          return this.replayFromExisting(ctx, key, input, existing);
         }
 
         // 2. No existe → RESERVAR PRIMERO (el INSERT puede lanzar DuplicateIdempotencyKeyError)
-        if (!isRetry) {
-          const fingerprint = computeFingerprint(input);
-          await ctx.idempotency.save({
-            key,
-            transactionId: input.id,
-            fingerprint,
-          });
-        }
+        const fingerprint = computeFingerprint(input);
+        await ctx.idempotency.save({
+          key,
+          transactionId: input.id,
+          fingerprint,
+        });
 
         // 3. Ejecutar la transferencia después de reservar
-        const transaction = await this.executeTransfer(ctx, input);
-        return { transaction, replayed: false };
+        try {
+          const transaction = await this.executeTransfer(ctx, input);
+          this.logger.info("transfer.created", {
+            transactionId: transaction.id,
+            fromAccountId: input.fromAccountId,
+            toAccountId: input.toAccountId,
+            amountMinor: input.amount.minor.toString(),
+            currency: input.amount.currency,
+            idempotencyKey: key,
+          });
+          return { transaction, replayed: false };
+        } catch (err) {
+          this.logTransferError(err, input);
+          throw err;
+        }
       });
     } catch (err) {
-      if (err instanceof DuplicateIdempotencyKeyError && !isRetry) {
+      if (err instanceof DuplicateIdempotencyKeyError) {
         // La constraint única serializó la carrera concurrente.
         // La transacción de DB de esta request ya hizo ROLLBACK.
-        // Reintentar UNA VEZ en una nueva transacción → findByKey encontrará
-        // el registro escrito por el ganador → replay.
-        return this.executeIdempotent(input, key, true);
+        // Ejecutar UNA nueva transacción que solo lee y hace replay;
+        // nunca reserva ni transfiere.
+        return this.uow.transaction((ctx) => this.replayFromExisting(ctx, key, input));
       }
       throw err;
+    }
+  }
+
+  /**
+   * Lee el registro de idempotencia existente, valida la fingerprint y devuelve el replay.
+   *
+   * Se usa en dos contextos:
+   *   a) Durante el intento normal, cuando findByKey ya encontró un registro.
+   *   b) En la transacción de replay tras DuplicateIdempotencyKeyError (existingRecord omitido).
+   *
+   * @param existingRecord - Si se pasa, se usa directamente (evita un segundo findByKey).
+   *   Si se omite, se busca en la DB (caso b: el ganador ya commitó, findByKey encontrará el registro).
+   */
+  private async replayFromExisting(
+    ctx: TransactionalContext,
+    key: string,
+    input: TransferInput,
+    existingRecord?: { key: string; transactionId: string; fingerprint: string }
+  ): Promise<TransferResult> {
+    const record = existingRecord ?? (await ctx.idempotency.findByKey(key));
+
+    if (record === undefined) {
+      // Inalcanzable en la práctica: se llega aquí solo tras DuplicateIdempotencyKeyError,
+      // lo que garantiza que el ganador ya insertó el registro y commitó. Si findByKey
+      // devuelve undefined aquí, es un bug de consistencia interna de la DB, no de negocio.
+      throw new Error(`idempotency retry: expected existing record for key '${key}'`);
+    }
+
+    const fingerprint = computeFingerprint(input);
+    if (record.fingerprint !== fingerprint) {
+      this.logger.warn("transfer.conflict", { idempotencyKey: key });
+      throw new IdempotencyConflictError(key);
+    }
+
+    // Replay: devolver la transacción original sin mover dinero
+    const tx = await ctx.transactions.findById(record.transactionId);
+    if (tx === undefined) {
+      // No debería ocurrir si la escritura fue atómica; es un error interno
+      throw new Error(
+        `Idempotency record found for key '${key}' but transaction '${record.transactionId}' not found.`
+      );
+    }
+
+    this.logger.info("transfer.replayed", {
+      transactionId: tx.id,
+      idempotencyKey: key,
+    });
+    return { transaction: tx, replayed: true };
+  }
+
+  /**
+   * Emite el log de warn correspondiente al error de negocio detectado.
+   * Centraliza el log-before-throw para los flujos de transferencia.
+   */
+  private logTransferError(err: unknown, input: TransferInput): void {
+    if (err instanceof OverdraftError) {
+      this.logger.warn("transfer.overdraft_rejected", {
+        fromAccountId: input.fromAccountId,
+        amountMinor: input.amount.minor.toString(),
+        currency: input.amount.currency,
+      });
+    } else if (err instanceof AccountNotFoundError) {
+      this.logger.warn("transfer.account_not_found", { accountId: err.accountId });
     }
   }
 
