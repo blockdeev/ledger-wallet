@@ -11,15 +11,22 @@ export class ConfigError extends Error {
   }
 }
 
+/** Niveles válidos de pino. */
+const VALID_LOG_LEVELS = ["fatal", "error", "warn", "info", "debug", "trace", "silent"] as const;
+export type LogLevel = (typeof VALID_LOG_LEVELS)[number];
+
 export interface AppConfig {
   port: number;
   databaseUrl: string;
+  /** Nivel de log pino. Default: "info". Configurable vía LOG_LEVEL. */
+  logLevel: LogLevel;
 }
 
 /**
  * Lee y valida las variables de entorno.
  * @throws ConfigError si DATABASE_URL falta o está vacía.
  * @throws ConfigError si PORT no es un entero > 0.
+ * @throws ConfigError si LOG_LEVEL viene y no es un nivel pino válido.
  */
 export function loadConfig(): AppConfig {
   const portRaw = process.env.PORT ?? "3000";
@@ -39,5 +46,13 @@ export function loadConfig(): AppConfig {
     );
   }
 
-  return { port, databaseUrl };
+  const logLevelRaw = process.env.LOG_LEVEL ?? "info";
+  if (!(VALID_LOG_LEVELS as readonly string[]).includes(logLevelRaw)) {
+    throw new ConfigError(
+      `Invalid LOG_LEVEL value "${logLevelRaw}": must be one of ${VALID_LOG_LEVELS.join(", ")}.`
+    );
+  }
+  const logLevel = logLevelRaw as LogLevel;
+
+  return { port, databaseUrl, logLevel };
 }

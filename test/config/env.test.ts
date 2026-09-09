@@ -93,4 +93,37 @@ describe("loadConfig", () => {
       expect(e).toBeInstanceOf(ConfigError);
     }
   });
+
+  // ── logLevel (Fase 4) ─────────────────────────────────────────────────────
+
+  it("logLevel defaults to 'info' when LOG_LEVEL is not set", () => {
+    delete process.env.LOG_LEVEL;
+    process.env.PORT = "3000";
+    process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/db";
+
+    const config = loadConfig();
+    expect(config.logLevel).toBe("info");
+  });
+
+  it("logLevel accepts valid pino levels", () => {
+    process.env.PORT = "3000";
+    process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/db";
+
+    for (const level of ["fatal", "error", "warn", "info", "debug", "trace", "silent"]) {
+      process.env.LOG_LEVEL = level;
+      const config = loadConfig();
+      expect(config.logLevel).toBe(level);
+    }
+  });
+
+  it("throws ConfigError when LOG_LEVEL is invalid", () => {
+    process.env.PORT = "3000";
+    process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/db";
+    process.env.LOG_LEVEL = "verbose";
+
+    expect(() => loadConfig()).toThrow(ConfigError);
+    expect(() => loadConfig()).toThrow(/LOG_LEVEL/);
+
+    delete process.env.LOG_LEVEL;
+  });
 });

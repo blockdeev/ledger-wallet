@@ -343,6 +343,58 @@ in-memory (en `npm test`, sin Docker) y contra el adapter Postgres (en `npm run
 test:integration`, con testcontainers). Esto demuestra que Postgres es un drop-in del
 puerto: la abstracción hexagonal funciona.
 
+## Observabilidad / Logging
+
+El sistema emite **logs estructurados de eventos de negocio** en formato JSON
+(pino) con correlación automática por request.
+
+### Configuración
+
+La variable `LOG_LEVEL` controla el nivel de log (default: `info`). Valores
+válidos: `fatal`, `error`, `warn`, `info`, `debug`, `trace`, `silent`.
+
+```bash
+LOG_LEVEL=debug npm start
+```
+
+### Eventos emitidos
+
+| Evento | Nivel | Cuándo |
+|---|---|---|
+| `account.created` | info | Cuenta creada exitosamente |
+| `account.already_exists` | warn | Intento de crear cuenta con id duplicado |
+| `transfer.created` | info | Transferencia nueva ejecutada |
+| `transfer.replayed` | info | Replay de transferencia idempotente |
+| `transfer.conflict` | warn | Idempotency-Key reutilizada con payload distinto |
+| `transfer.overdraft_rejected` | warn | Transferencia rechazada por fondos insuficientes |
+| `transfer.account_not_found` | warn | Cuenta no encontrada durante una transferencia |
+
+### Correlación por request
+
+Cada request HTTP genera un `requestId` único (Fastify: `req-1`, `req-2`, …).
+Todos los logs emitidos durante ese request — tanto los de Fastify (entrada/
+salida HTTP) como los de negocio (eventos de la tabla anterior) — llevan el
+mismo `requestId`, lo que permite correlacionar una traza completa en cualquier
+sistema de log management.
+
+### Ejemplo de línea de log estructurada
+
+```json
+{"level":30,"time":1700000000000,"pid":123,"hostname":"api-1","reqId":"req-4","event":"transfer.created","transactionId":"tx-abc","fromAccountId":"wallet-a","toAccountId":"wallet-b","amountMinor":"30000","currency":"ARS","idempotencyKey":"idem-xyz"}
+```
+
+Los logs de request HTTP de Fastify incluyen método, URL, status y tiempo de
+respuesta. Los logs de negocio incluyen siempre `event` y los campos específicos
+del evento. Ambos llevan `requestId` cuando se emiten dentro de un ciclo HTTP.
+
+### Arquitectura
+
+El logging sigue las fronteras hexagonales: el puerto `Logger`
+(`src/application/ports/logger.ts`) es la única dependencia de logging en
+dominio y aplicación. El adapter pino (`PinoLogger`) y el contexto de
+correlación (`AsyncLocalStorage`) viven en `src/adapters/observability/`.
+Ver [ADR 0012](docs/adr/0012-observabilidad-logging.md).
+
 ## Decisiones de arquitectura (ADRs)
 
 Ver [`docs/adr/`](docs/adr):
@@ -357,6 +409,8 @@ Ver [`docs/adr/`](docs/adr):
 - `0008` — Capa de aplicación (puertos, DIP, derivación de saldo)
 - `0009` — Persistencia (Postgres, Kysely, migraciones en código, testcontainers, contract test)
 - `0010` — Concurrencia y atomicidad (UnitOfWork port, `FOR UPDATE ORDER BY id`, saldo derivado con lock)
+- `0011` — Idempotencia (reserve-first, constraint única, replay concurrente)
+- `0012` — Observabilidad: logging estructurado por puerto + AsyncLocalStorage
 
 ## Licencia
 

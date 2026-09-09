@@ -3,6 +3,7 @@ import { AccountRepository } from "../ports/account-repository.js";
 import { TransactionRepository } from "../ports/transaction-repository.js";
 import { AccountNotFoundError } from "../errors.js";
 import { deriveBalance } from "../balance-derivation.js";
+import { Logger } from "../ports/logger.js";
 
 export interface GetBalanceInput {
   accountId: string;
@@ -22,10 +23,20 @@ export interface GetBalanceInput {
  * @throws AccountNotFoundError si la cuenta no existe.
  */
 export class GetBalance {
+  private readonly accountRepo: AccountRepository;
+  private readonly txRepo: TransactionRepository;
+
   constructor(
-    private readonly accountRepo: AccountRepository,
-    private readonly txRepo: TransactionRepository
-  ) {}
+    accountRepo: AccountRepository,
+    txRepo: TransactionRepository,
+    // Logger recibido por consistencia con la interfaz app-scoped de la Fase 4.
+    // Las lecturas de balance no se instrumentan (generan ruido; fuera de alcance).
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    _logger: Logger
+  ) {
+    this.accountRepo = accountRepo;
+    this.txRepo = txRepo;
+  }
 
   async execute(input: GetBalanceInput): Promise<Money> {
     const account = await this.accountRepo.findById(input.accountId);

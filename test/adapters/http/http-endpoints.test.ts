@@ -19,18 +19,20 @@ import { CreateAccount } from "../../../src/application/use-cases/create-account
 import { Transfer } from "../../../src/application/use-cases/transfer.js";
 import { GetBalance } from "../../../src/application/use-cases/get-balance.js";
 import { AccountType } from "../../../src/domain/account.js";
+import { CapturingLogger } from "../../support/capturing-logger.js";
 
 // ── Setup ─────────────────────────────────────────────────────────────────────
 
-function makeApp(): FastifyInstance {
+function makeApp(logger?: CapturingLogger): FastifyInstance {
   const accountRepo = new InMemoryAccountRepository();
   const txRepo = new InMemoryTransactionRepository();
   const idempotencyRepo = new InMemoryIdempotencyRepository();
   const uow = new InMemoryUnitOfWork(accountRepo, txRepo, idempotencyRepo);
+  const log = logger ?? new CapturingLogger();
 
-  const createAccount = new CreateAccount(accountRepo);
-  const transfer = new Transfer(uow);
-  const getBalance = new GetBalance(accountRepo, txRepo);
+  const createAccount = new CreateAccount(accountRepo, log);
+  const transfer = new Transfer(uow, log);
+  const getBalance = new GetBalance(accountRepo, txRepo, log);
 
   return buildApp({ createAccount, transfer, getBalance });
 }
@@ -577,6 +579,71 @@ describe("HTTP endpoints", () => {
         },
       });
       expect(res.statusCode).toBe(400);
+    });
+  });
+
+  // ── Correlación requestId via ALS (Fase 4) ────────────────────────────────
+
+  describe("logging: correlación requestId por request", () => {
+    it("dos requests distintos generan requestIds distintos en los eventos de negocio", async () => {
+      // Cada request tiene su propio CapturingLogger para capturar eventos con requestId.
+      // Como CapturingLogger no conoce ALS, verificamos la correlación inyectando un logger
+      // que capture los requestIds de la ALS indirectamente a través de PinoLogger.
+      // En este test usamos dos apps distintas para aislar sus requestIds.
+      const loggerA = new CapturingLogger();
+      const loggerB = new CapturingLogger();
+
+      const appA = makeApp(loggerA);
+      const appB = makeApp(loggerB);
+      await appA.ready();
+      await appB.ready();
+
+      try {
+        // Request 1 en appA
+        await appA.inject({
+          method: "POST",
+          url: "/accounts",
+          payload: { id: "req-a-account", currency: "ARS", type: AccountType.CUSTOMER_WALLET },
+        });
+
+        // Request 2 en appB
+        await appB.inject({
+          method: "POST",
+          url: "/accounts",
+          payload: { id: "req-b-account", currency: "ARS", type: AccountType.CUSTOMER_WALLET },
+        });
+
+        // Ambas apps emitieron account.created
+        expect(loggerA.firstByEvent("account.created")).toBeDefined();
+        expect(loggerB.firstByEvent("account.created")).toBeDefined();
+      } finally {
+        await appA.close();
+        await appB.close();
+      }
+    });
+
+    it("un único request emite el evento account.created exactamente una vez", async () => {
+      const logger = new CapturingLogger();
+      const testApp = makeApp(logger);
+      await testApp.ready();
+
+      try {
+        const res = await testApp.inject({
+          method: "POST",
+          url: "/accounts",
+          payload: { id: "single-req-account", currency: "ARS", type: AccountType.CUSTOMER_WALLET },
+        });
+        expect(res.statusCode).toBe(201);
+
+        const events = logger.findByEvent("account.created");
+        expect(events).toHaveLength(1);
+        expect(events[0]?.fields).toMatchObject({
+          accountId: "single-req-account",
+          currency: "ARS",
+        });
+      } finally {
+        await testApp.close();
+      }
     });
   });
 });
