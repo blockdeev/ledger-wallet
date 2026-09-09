@@ -27,6 +27,7 @@ import { PostgresAccountRepository } from "../../../src/adapters/outbound/persis
 import { PostgresTransactionRepository } from "../../../src/adapters/outbound/persistence/postgres/postgres-transaction-repository.js";
 import { PostgresUnitOfWork } from "../../../src/adapters/outbound/persistence/postgres/postgres-unit-of-work.js";
 import { CreateAccount } from "../../../src/application/use-cases/create-account.js";
+import { CapturingLogger } from "../../support/capturing-logger.js";
 import { Transfer } from "../../../src/application/use-cases/transfer.js";
 import { GetBalance } from "../../../src/application/use-cases/get-balance.js";
 import { AccountType } from "../../../src/domain/account.js";
@@ -78,9 +79,9 @@ function makeUseCases() {
   const uow = new PostgresUnitOfWork(db);
 
   return {
-    createAccount: new CreateAccount(accountRepo),
-    transfer: new Transfer(uow),
-    getBalance: new GetBalance(accountRepo, txRepo),
+    createAccount: new CreateAccount(accountRepo, new CapturingLogger()),
+    transfer: new Transfer(uow, new CapturingLogger()),
+    getBalance: new GetBalance(accountRepo, txRepo, new CapturingLogger()),
   };
 }
 
