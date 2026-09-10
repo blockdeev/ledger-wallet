@@ -4,16 +4,19 @@ import { InMemoryAccountRepository } from "../../src/adapters/outbound/persisten
 import { AccountType } from "../../src/domain/account.js";
 import { AccountAlreadyExistsError } from "../../src/application/errors.js";
 import { CapturingLogger } from "../support/capturing-logger.js";
+import { CapturingMetrics } from "../support/capturing-metrics.js";
 
 describe("CreateAccount use case", () => {
   let accountRepo: InMemoryAccountRepository;
   let logger: CapturingLogger;
+  let metrics: CapturingMetrics;
   let createAccount: CreateAccount;
 
   beforeEach(() => {
     accountRepo = new InMemoryAccountRepository();
     logger = new CapturingLogger();
-    createAccount = new CreateAccount(accountRepo, logger);
+    metrics = new CapturingMetrics();
+    createAccount = new CreateAccount(accountRepo, logger, metrics);
   });
 
   it("creates and persists a new account", async () => {
@@ -107,5 +110,25 @@ describe("CreateAccount use case", () => {
     expect(entry).toBeDefined();
     expect(entry?.level).toBe("warn");
     expect(entry?.fields).toMatchObject({ accountId: "dup" });
+  });
+
+  // ── Métricas (Fase 5) ─────────────────────────────────────────────────────
+
+  it("métricas: recordAccountCreated se llama al crear una cuenta exitosamente", async () => {
+    await createAccount.execute({ id: "m-1", currency: "ARS", type: AccountType.CUSTOMER_WALLET });
+    expect(metrics.accountCreatedCount()).toBe(1);
+  });
+
+  it("métricas: recordAccountCreated NO se llama cuando el id ya existe", async () => {
+    await createAccount.execute({ id: "m-dup", currency: "ARS", type: AccountType.CUSTOMER_WALLET });
+    const countAfterFirst = metrics.accountCreatedCount();
+
+    try {
+      await createAccount.execute({ id: "m-dup", currency: "USD", type: AccountType.EXTERNAL });
+    } catch {
+      // esperado
+    }
+
+    expect(metrics.accountCreatedCount()).toBe(countAfterFirst); // sin incremento adicional
   });
 });

@@ -20,6 +20,8 @@ import { Transfer } from "../../../src/application/use-cases/transfer.js";
 import { GetBalance } from "../../../src/application/use-cases/get-balance.js";
 import { AccountType } from "../../../src/domain/account.js";
 import { CapturingLogger } from "../../support/capturing-logger.js";
+import { CapturingMetrics } from "../../support/capturing-metrics.js";
+import { PrometheusMetrics } from "../../../src/adapters/observability/prometheus-metrics.js";
 
 // ── Setup ─────────────────────────────────────────────────────────────────────
 
@@ -30,11 +32,34 @@ function makeApp(logger?: CapturingLogger): FastifyInstance {
   const uow = new InMemoryUnitOfWork(accountRepo, txRepo, idempotencyRepo);
   const log = logger ?? new CapturingLogger();
 
-  const createAccount = new CreateAccount(accountRepo, log);
-  const transfer = new Transfer(uow, log);
+  const metrics = new CapturingMetrics();
+  const createAccount = new CreateAccount(accountRepo, log, metrics);
+  const transfer = new Transfer(uow, log, metrics);
   const getBalance = new GetBalance(accountRepo, txRepo, log);
 
   return buildApp({ createAccount, transfer, getBalance });
+}
+
+/** Variante con PrometheusMetrics real para testear el endpoint /metrics. */
+function makeAppWithPrometheus(): { app: FastifyInstance; prometheusMetrics: PrometheusMetrics } {
+  const accountRepo = new InMemoryAccountRepository();
+  const txRepo = new InMemoryTransactionRepository();
+  const idempotencyRepo = new InMemoryIdempotencyRepository();
+  const uow = new InMemoryUnitOfWork(accountRepo, txRepo, idempotencyRepo);
+  const log = new CapturingLogger();
+
+  const prometheusMetrics = new PrometheusMetrics();
+  const createAccount = new CreateAccount(accountRepo, log, prometheusMetrics);
+  const transfer = new Transfer(uow, log, prometheusMetrics);
+  const getBalance = new GetBalance(accountRepo, txRepo, log);
+
+  const app = buildApp({
+    createAccount,
+    transfer,
+    getBalance,
+    metricsRegistry: prometheusMetrics.registry,
+  });
+  return { app, prometheusMetrics };
 }
 
 describe("HTTP endpoints", () => {
@@ -644,6 +669,54 @@ describe("HTTP endpoints", () => {
       } finally {
         await testApp.close();
       }
+    });
+  });
+
+  // ── GET /metrics ───────────────────────────────────────────────────────────
+
+  describe("GET /metrics", () => {
+    it("200 con Content-Type de Prometheus y body con ledger_transfers_total tras una transferencia", async () => {
+      const { app: metricsApp } = makeAppWithPrometheus();
+      await metricsApp.ready();
+
+      try {
+        // Crear cuentas y transferir por la API para que el counter quede registrado
+        await metricsApp.inject({
+          method: "POST",
+          url: "/accounts",
+          payload: { id: "sys-m", currency: "ARS", type: AccountType.SYSTEM_CLEARING },
+        });
+        await metricsApp.inject({
+          method: "POST",
+          url: "/accounts",
+          payload: { id: "w-m", currency: "ARS", type: AccountType.CUSTOMER_WALLET },
+        });
+        await metricsApp.inject({
+          method: "POST",
+          url: "/transfers",
+          payload: {
+            id: "tx-metrics-http",
+            fromAccountId: "sys-m",
+            toAccountId: "w-m",
+            amount: { minor: "100", currency: "ARS" },
+          },
+        });
+
+        const res = await metricsApp.inject({ method: "GET", url: "/metrics" });
+
+        expect(res.statusCode).toBe(200);
+        // Content-Type debe ser text/plain; version=0.0.4 (formato Prometheus)
+        expect(res.headers["content-type"]).toMatch(/text\/plain/);
+        // El body debe incluir la métrica de transferencias
+        expect(res.body).toContain("ledger_transfers_total");
+      } finally {
+        await metricsApp.close();
+      }
+    });
+
+    it("GET /metrics no existe (404) cuando no se provee metricsRegistry", async () => {
+      const res = await app.inject({ method: "GET", url: "/metrics" });
+      expect(res.statusCode).toBe(404);
     });
   });
 });

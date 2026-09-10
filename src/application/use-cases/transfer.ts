@@ -10,6 +10,7 @@ import {
 } from "../errors.js";
 import { deriveBalance } from "../balance-derivation.js";
 import { Logger } from "../ports/logger.js";
+import { MetricsRecorder } from "../ports/metrics-recorder.js";
 import { OverdraftError } from "../../domain/errors.js";
 
 export interface TransferInput {
@@ -79,10 +80,26 @@ export function computeFingerprint(input: TransferInput): string {
 export class Transfer {
   constructor(
     private readonly uow: UnitOfWork,
-    private readonly logger: Logger
+    private readonly logger: Logger,
+    private readonly metrics: MetricsRecorder
   ) {}
 
   async execute(input: TransferInput): Promise<TransferResult> {
+    const start = performance.now();
+    try {
+      const result = await this.executeInner(input);
+      this.metrics.recordTransfer(result.replayed ? "replayed" : "created");
+      return result;
+    } catch (err) {
+      this.metrics.recordTransfer(this.outcomeForError(err));
+      throw err;
+    } finally {
+      this.metrics.observeTransferDuration((performance.now() - start) / 1000);
+    }
+  }
+
+  /** Lógica de ejecución (sin instrumentación de métricas de alto nivel). */
+  private async executeInner(input: TransferInput): Promise<TransferResult> {
     // Sin clave de idempotencia → comportamiento exacto de 3b
     if (input.idempotencyKey === undefined) {
       return this.uow.transaction(async (ctx) => {
@@ -105,6 +122,16 @@ export class Transfer {
 
     // Con clave de idempotencia → reserve-first
     return this.executeIdempotent(input, input.idempotencyKey);
+  }
+
+  /** Mapea un error de negocio al outcome correspondiente para métricas. */
+  private outcomeForError(err: unknown): "conflict" | "overdraft" | "not_found" | "created" {
+    if (err instanceof IdempotencyConflictError) return "conflict";
+    if (err instanceof OverdraftError) return "overdraft";
+    if (err instanceof AccountNotFoundError) return "not_found";
+    // Errores inesperados no cuentan como outcome de negocio conocido;
+    // se registran bajo "created" para no silenciar la duración. Ver ADR 0013.
+    return "created";
   }
 
   /**

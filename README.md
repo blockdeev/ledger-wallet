@@ -395,6 +395,60 @@ dominio y aplicación. El adapter pino (`PinoLogger`) y el contexto de
 correlación (`AsyncLocalStorage`) viven en `src/adapters/observability/`.
 Ver [ADR 0012](docs/adr/0012-observabilidad-logging.md).
 
+## Métricas
+
+La aplicación expone métricas de negocio en formato Prometheus en el endpoint
+`GET /metrics` (texto plano, `Content-Type: text/plain; version=0.0.4`).
+
+### Endpoint
+
+```
+GET /metrics
+```
+
+No requiere autenticación (endpoint de scraping interno). Ejemplo de scrape
+con `curl`:
+
+```bash
+curl http://localhost:3000/metrics
+```
+
+Ejemplo de configuración de `prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: ledger-wallet
+    static_configs:
+      - targets: ['localhost:3000']
+```
+
+### Métricas expuestas
+
+| Nombre | Tipo | Labels | Descripción |
+|---|---|---|---|
+| `ledger_transfers_total` | Counter | `outcome` | Total de intentos de transferencia por resultado |
+| `ledger_accounts_created_total` | Counter | — | Total de cuentas creadas exitosamente |
+| `ledger_transfer_duration_seconds` | Histogram | — | Duración de `Transfer.execute()` en segundos |
+
+#### Valores del label `outcome` en `ledger_transfers_total`
+
+| Valor | Cuándo |
+|---|---|
+| `created` | Alta nueva exitosa |
+| `replayed` | Replay por idempotency key (misma clave + mismo payload) |
+| `conflict` | `IdempotencyConflictError`: misma clave, payload distinto |
+| `overdraft` | `OverdraftError`: saldo insuficiente en cuenta origen |
+| `not_found` | `AccountNotFoundError`: cuenta origen o destino inexistente |
+
+### Arquitectura
+
+Las métricas siguen las mismas fronteras hexagonales que el logging: el puerto
+`MetricsRecorder` (`src/application/ports/metrics-recorder.ts`) es la única
+dependencia en la capa de aplicación. El adapter concreto (`PrometheusMetrics`,
+que usa `prom-client`) vive en `src/adapters/observability/`. El doble de test
+`CapturingMetrics` (`test/support/`) permite afirmar sobre métricas sin
+instanciar Prometheus. Ver [ADR 0013](docs/adr/0013-metricas.md).
+
 ## Decisiones de arquitectura (ADRs)
 
 Ver [`docs/adr/`](docs/adr):
@@ -411,6 +465,7 @@ Ver [`docs/adr/`](docs/adr):
 - `0010` — Concurrencia y atomicidad (UnitOfWork port, `FOR UPDATE ORDER BY id`, saldo derivado con lock)
 - `0011` — Idempotencia (reserve-first, constraint única, replay concurrente)
 - `0012` — Observabilidad: logging estructurado por puerto + AsyncLocalStorage
+- `0013` — Observabilidad: métricas de negocio por puerto + Prometheus
 
 ## Licencia
 
