@@ -852,3 +852,54 @@ describe("Transfer use case — métricas (Fase 5)", () => {
     expect(metrics.durationObservations()).toHaveLength(1);
   });
 });
+
+describe("Transfer use case — métricas: error inesperado (Fase 6 fix)", () => {
+  let accountRepo: InMemoryAccountRepository;
+  let txRepo: InMemoryTransactionRepository;
+  let idempotencyRepo: InMemoryIdempotencyRepository;
+  let metrics: CapturingMetrics;
+
+  beforeEach(async () => {
+    accountRepo = new InMemoryAccountRepository();
+    txRepo = new InMemoryTransactionRepository();
+    idempotencyRepo = new InMemoryIdempotencyRepository();
+    metrics = new CapturingMetrics();
+
+    const uow = new InMemoryUnitOfWork(accountRepo, txRepo, idempotencyRepo);
+    const createAccount = new CreateAccount(accountRepo, new CapturingLogger(), new CapturingMetrics());
+    await createAccount.execute({ id: "system", currency: "ARS", type: AccountType.SYSTEM_CLEARING });
+    await createAccount.execute({ id: "wallet-a", currency: "ARS", type: AccountType.CUSTOMER_WALLET });
+
+    // Fondear wallet-a para que el test de error no se confunda con un overdraft
+    const seedTransfer = new Transfer(uow, new CapturingLogger(), new CapturingMetrics());
+    await seedTransfer.execute({
+      id: "seed-error-test",
+      fromAccountId: "system",
+      toAccountId: "wallet-a",
+      amount: Money.fromMinor(1000n, "ARS"),
+    });
+  });
+
+  it("recordTransfer('error') ante error inesperado: NO infla 'created'", async () => {
+    // UoW doble que lanza un Error genérico (caída de DB, bug interno)
+    // No es OverdraftError, AccountNotFoundError ni IdempotencyConflictError
+    const bustedUow = new InMemoryUnitOfWork(accountRepo, txRepo, idempotencyRepo);
+    bustedUow.transaction = async () => {
+      throw new Error("DB connection lost");
+    };
+    const transferWithBustedUow = new Transfer(bustedUow, new CapturingLogger(), metrics);
+
+    await expect(
+      transferWithBustedUow.execute({
+        id: "tx-unexpected-err",
+        fromAccountId: "wallet-a",
+        toAccountId: "system",
+        amount: Money.fromMinor(10n, "ARS"),
+      })
+    ).rejects.toThrow("DB connection lost");
+
+    // outcome="error" registrado — no "created"
+    expect(metrics.transfersWithOutcome("error")).toBe(1);
+    expect(metrics.transfersWithOutcome("created")).toBe(0);
+  });
+});

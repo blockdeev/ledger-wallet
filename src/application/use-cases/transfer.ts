@@ -125,13 +125,14 @@ export class Transfer {
   }
 
   /** Mapea un error de negocio al outcome correspondiente para métricas. */
-  private outcomeForError(err: unknown): "conflict" | "overdraft" | "not_found" | "created" {
+  private outcomeForError(err: unknown): "conflict" | "overdraft" | "not_found" | "error" {
     if (err instanceof IdempotencyConflictError) return "conflict";
     if (err instanceof OverdraftError) return "overdraft";
     if (err instanceof AccountNotFoundError) return "not_found";
-    // Errores inesperados no cuentan como outcome de negocio conocido;
-    // se registran bajo "created" para no silenciar la duración. Ver ADR 0013.
-    return "created";
+    // Errores inesperados (bugs, caídas de DB, CurrencyMismatchError, etc.) se
+    // registran como "error" para no inflar el contador de transferencias exitosas.
+    // Ver ADR 0013 (actualizado en Fase 6).
+    return "error";
   }
 
   /**

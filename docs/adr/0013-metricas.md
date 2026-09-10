@@ -27,7 +27,7 @@ Se define la interfaz con métodos que hablan de **conceptos de negocio**, no de
 histogramas:
 
 ```typescript
-type TransferOutcome = "created" | "replayed" | "conflict" | "overdraft" | "not_found";
+type TransferOutcome = "created" | "replayed" | "conflict" | "overdraft" | "not_found" | "error";
 
 interface MetricsRecorder {
   recordTransfer(outcome: TransferOutcome): void;
@@ -66,8 +66,12 @@ instrumentan, siguiendo el mismo criterio que con el logger; evita ruido y viola
 
 ### 4. Instrumentación de `Transfer`
 
-- `recordTransfer(outcome)` se llama **siempre**: éxito (`"created"`, `"replayed"`) o error de
-  negocio (`"conflict"`, `"overdraft"`, `"not_found"`).
+- `recordTransfer(outcome)` se llama **siempre**: éxito (`"created"`, `"replayed"`), error de
+  negocio (`"conflict"`, `"overdraft"`, `"not_found"`), o error inesperado (`"error"`).
+- **Corrección Fase 6**: en la implementación inicial, errores inesperados (bugs, caídas de DB)
+  se registraban como `"created"`, inflando el contador de éxitos. Se corrigió a `"error"` para
+  no contaminar las métricas de negocio. El label `outcome` del adapter Prometheus es abierto
+  (string), por lo que el adapter no requirió cambios.
 - `observeTransferDuration(seconds)` se registra en un bloque `finally` con `performance.now()`
   para capturar la duración incluso cuando hay error.
 - La medición de duración usa `performance.now()` (pragmático; no se introduce un port `Clock` en
