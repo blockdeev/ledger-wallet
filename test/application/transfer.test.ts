@@ -11,6 +11,7 @@ import { Money } from "../../src/domain/money.js";
 import { AccountNotFoundError, IdempotencyConflictError } from "../../src/application/errors.js";
 import { OverdraftError } from "../../src/domain/errors.js";
 import { CapturingLogger } from "../support/capturing-logger.js";
+import { CapturingMetrics } from "../support/capturing-metrics.js";
 
 describe("Transfer use case", () => {
   let accountRepo: InMemoryAccountRepository;
@@ -28,9 +29,9 @@ describe("Transfer use case", () => {
     idempotencyRepo = new InMemoryIdempotencyRepository();
     uow = new InMemoryUnitOfWork(accountRepo, txRepo, idempotencyRepo);
     logger = new CapturingLogger();
-    transfer = new Transfer(uow, logger);
+    transfer = new Transfer(uow, logger, new CapturingMetrics());
     getBalance = new GetBalance(accountRepo, txRepo, new CapturingLogger());
-    createAccount = new CreateAccount(accountRepo, new CapturingLogger());
+    createAccount = new CreateAccount(accountRepo, new CapturingLogger(), new CapturingMetrics());
   });
 
   // ── Helper ────────────────────────────────────────────────────────────────
@@ -275,9 +276,6 @@ describe("Transfer use case", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { computeFingerprint } from "../../src/application/use-cases/transfer.js";
-import {
-  IdempotencyConflictError,
-} from "../../src/application/errors.js";
 
 describe("computeFingerprint (pure function)", () => {
   it("produces a deterministic string from the input fields", () => {
@@ -328,9 +326,9 @@ describe("Transfer use case — idempotencia (Fase 3c)", () => {
     txRepo = new InMemoryTransactionRepository();
     idempotencyRepo = new InMemoryIdempotencyRepository();
     uow = new InMemoryUnitOfWork(accountRepo, txRepo, idempotencyRepo);
-    transfer = new Transfer(uow, new CapturingLogger());
+    transfer = new Transfer(uow, new CapturingLogger(), new CapturingMetrics());
     getBalance = new GetBalance(accountRepo, txRepo, new CapturingLogger());
-    createAccount = new CreateAccount(accountRepo, new CapturingLogger());
+    createAccount = new CreateAccount(accountRepo, new CapturingLogger(), new CapturingMetrics());
 
     await createAccount.execute({ id: "system", currency: "ARS", type: AccountType.SYSTEM_CLEARING });
     await createAccount.execute({ id: "wallet-a", currency: "ARS", type: AccountType.CUSTOMER_WALLET });
@@ -570,7 +568,7 @@ describe("Transfer use case — idempotencia (Fase 3c)", () => {
   it("logging: emite transfer.created (info) en transferencia sin clave", async () => {
     // wallet-a ya tiene 1000 ARS del beforeEach
     const transferLogger = new CapturingLogger();
-    const t = new Transfer(uow, transferLogger);
+    const t = new Transfer(uow, transferLogger, new CapturingMetrics());
 
     await t.execute({
       id: "tx-log-1",
@@ -594,7 +592,7 @@ describe("Transfer use case — idempotencia (Fase 3c)", () => {
 
   it("logging: emite transfer.created (info) con idempotencyKey cuando se usa", async () => {
     const transferLogger = new CapturingLogger();
-    const t = new Transfer(uow, transferLogger);
+    const t = new Transfer(uow, transferLogger, new CapturingMetrics());
 
     await t.execute({
       id: "tx-log-idem",
@@ -614,7 +612,7 @@ describe("Transfer use case — idempotencia (Fase 3c)", () => {
 
   it("logging: emite transfer.replayed (info) en replay", async () => {
     const transferLogger = new CapturingLogger();
-    const t = new Transfer(uow, transferLogger);
+    const t = new Transfer(uow, transferLogger, new CapturingMetrics());
 
     const input = {
       id: "tx-replay-log",
@@ -639,7 +637,7 @@ describe("Transfer use case — idempotencia (Fase 3c)", () => {
 
   it("logging: emite transfer.conflict (warn) ante IdempotencyConflictError", async () => {
     const transferLogger = new CapturingLogger();
-    const t = new Transfer(uow, transferLogger);
+    const t = new Transfer(uow, transferLogger, new CapturingMetrics());
 
     await t.execute({
       id: "tx-conflict-log-1",
@@ -670,7 +668,7 @@ describe("Transfer use case — idempotencia (Fase 3c)", () => {
 
   it("logging: emite transfer.overdraft_rejected (warn) ante OverdraftError", async () => {
     const transferLogger = new CapturingLogger();
-    const t = new Transfer(uow, transferLogger);
+    const t = new Transfer(uow, transferLogger, new CapturingMetrics());
 
     try {
       await t.execute({
@@ -695,7 +693,7 @@ describe("Transfer use case — idempotencia (Fase 3c)", () => {
 
   it("logging: emite transfer.account_not_found (warn) ante AccountNotFoundError", async () => {
     const transferLogger = new CapturingLogger();
-    const t = new Transfer(uow, transferLogger);
+    const t = new Transfer(uow, transferLogger, new CapturingMetrics());
 
     try {
       await t.execute({
@@ -712,5 +710,145 @@ describe("Transfer use case — idempotencia (Fase 3c)", () => {
     expect(entry).toBeDefined();
     expect(entry?.level).toBe("warn");
     expect(entry?.fields).toMatchObject({ accountId: "wallet-inexistente" });
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FASE 5 — Tests de métricas (MetricsRecorder)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("Transfer use case — métricas (Fase 5)", () => {
+  let accountRepo: InMemoryAccountRepository;
+  let txRepo: InMemoryTransactionRepository;
+  let idempotencyRepo: InMemoryIdempotencyRepository;
+  let uow: InMemoryUnitOfWork;
+  let metrics: CapturingMetrics;
+  let transfer: Transfer;
+  let createAccount: CreateAccount;
+
+  beforeEach(async () => {
+    accountRepo = new InMemoryAccountRepository();
+    txRepo = new InMemoryTransactionRepository();
+    idempotencyRepo = new InMemoryIdempotencyRepository();
+    uow = new InMemoryUnitOfWork(accountRepo, txRepo, idempotencyRepo);
+    metrics = new CapturingMetrics();
+    transfer = new Transfer(uow, new CapturingLogger(), metrics);
+    createAccount = new CreateAccount(accountRepo, new CapturingLogger(), new CapturingMetrics());
+
+    await createAccount.execute({ id: "system", currency: "ARS", type: AccountType.SYSTEM_CLEARING });
+    await createAccount.execute({ id: "wallet-a", currency: "ARS", type: AccountType.CUSTOMER_WALLET });
+    await createAccount.execute({ id: "wallet-b", currency: "ARS", type: AccountType.CUSTOMER_WALLET });
+    // Fondear wallet-a con 1000 ARS
+    await transfer.execute({
+      id: "seed-metrics",
+      fromAccountId: "system",
+      toAccountId: "wallet-a",
+      amount: Money.fromMinor(1000n, "ARS"),
+    });
+    // Reset metrics after setup so tests start clean
+    metrics.calls.length = 0;
+  });
+
+  it("métricas: recordTransfer('created') en alta nueva exitosa", async () => {
+    await transfer.execute({
+      id: "tx-m-created",
+      fromAccountId: "wallet-a",
+      toAccountId: "wallet-b",
+      amount: Money.fromMinor(100n, "ARS"),
+    });
+    expect(metrics.transfersWithOutcome("created")).toBe(1);
+  });
+
+  it("métricas: recordTransfer('replayed') en replay por idempotencyKey", async () => {
+    const input = {
+      id: "tx-m-replay",
+      fromAccountId: "wallet-a",
+      toAccountId: "wallet-b",
+      amount: Money.fromMinor(50n, "ARS"),
+      idempotencyKey: "key-m-replay",
+    };
+    await transfer.execute(input);
+    metrics.calls.length = 0;
+
+    await transfer.execute(input);
+    expect(metrics.transfersWithOutcome("replayed")).toBe(1);
+  });
+
+  it("métricas: recordTransfer('conflict') ante IdempotencyConflictError", async () => {
+    await transfer.execute({
+      id: "tx-m-conflict-1",
+      fromAccountId: "wallet-a",
+      toAccountId: "wallet-b",
+      amount: Money.fromMinor(100n, "ARS"),
+      idempotencyKey: "key-m-conflict",
+    });
+    metrics.calls.length = 0;
+
+    try {
+      await transfer.execute({
+        id: "tx-m-conflict-2",
+        fromAccountId: "wallet-a",
+        toAccountId: "wallet-b",
+        amount: Money.fromMinor(999n, "ARS"),
+        idempotencyKey: "key-m-conflict",
+      });
+    } catch {
+      // esperado
+    }
+    expect(metrics.transfersWithOutcome("conflict")).toBe(1);
+  });
+
+  it("métricas: recordTransfer('overdraft') ante OverdraftError", async () => {
+    try {
+      await transfer.execute({
+        id: "tx-m-overdraft",
+        fromAccountId: "wallet-a",
+        toAccountId: "wallet-b",
+        amount: Money.fromMinor(9999n, "ARS"),
+      });
+    } catch {
+      // esperado
+    }
+    expect(metrics.transfersWithOutcome("overdraft")).toBe(1);
+  });
+
+  it("métricas: recordTransfer('not_found') ante AccountNotFoundError", async () => {
+    try {
+      await transfer.execute({
+        id: "tx-m-notfound",
+        fromAccountId: "system",
+        toAccountId: "cuenta-inexistente",
+        amount: Money.fromMinor(100n, "ARS"),
+      });
+    } catch {
+      // esperado
+    }
+    expect(metrics.transfersWithOutcome("not_found")).toBe(1);
+  });
+
+  it("métricas: observeTransferDuration se llama en toda ejecución exitosa", async () => {
+    await transfer.execute({
+      id: "tx-m-dur-ok",
+      fromAccountId: "wallet-a",
+      toAccountId: "wallet-b",
+      amount: Money.fromMinor(10n, "ARS"),
+    });
+    const durations = metrics.durationObservations();
+    expect(durations).toHaveLength(1);
+    expect(durations[0]).toBeGreaterThanOrEqual(0);
+  });
+
+  it("métricas: observeTransferDuration se llama incluso cuando hay error (finally)", async () => {
+    try {
+      await transfer.execute({
+        id: "tx-m-dur-err",
+        fromAccountId: "wallet-a",
+        toAccountId: "wallet-b",
+        amount: Money.fromMinor(99999n, "ARS"),
+      });
+    } catch {
+      // esperado
+    }
+    expect(metrics.durationObservations()).toHaveLength(1);
   });
 });

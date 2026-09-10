@@ -4,6 +4,7 @@ import { TransactionRepository } from "../ports/transaction-repository.js";
 import { AccountNotFoundError } from "../errors.js";
 import { deriveBalance } from "../balance-derivation.js";
 import { Logger } from "../ports/logger.js";
+import { MetricsRecorder } from "../ports/metrics-recorder.js";
 
 export interface GetBalanceInput {
   accountId: string;
@@ -32,7 +33,11 @@ export class GetBalance {
     // Logger recibido por consistencia con la interfaz app-scoped de la Fase 4.
     // Las lecturas de balance no se instrumentan (generan ruido; fuera de alcance).
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    _logger: Logger
+    _logger: Logger,
+    // MetricsRecorder recibido por consistencia con la API app-scoped de la Fase 5.
+    // GetBalance no registra métricas (ver brief y ADR 0013).
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    _metrics?: MetricsRecorder
   ) {
     this.accountRepo = accountRepo;
     this.txRepo = txRepo;

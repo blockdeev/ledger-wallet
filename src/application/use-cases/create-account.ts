@@ -2,6 +2,7 @@ import { Account, AccountType, createAccount } from "../../domain/account.js";
 import { AccountRepository } from "../ports/account-repository.js";
 import { AccountAlreadyExistsError } from "../errors.js";
 import { Logger } from "../ports/logger.js";
+import { MetricsRecorder } from "../ports/metrics-recorder.js";
 
 export interface CreateAccountInput {
   id: string;
@@ -21,7 +22,8 @@ export interface CreateAccountInput {
 export class CreateAccount {
   constructor(
     private readonly accountRepo: AccountRepository,
-    private readonly logger: Logger
+    private readonly logger: Logger,
+    private readonly metrics: MetricsRecorder
   ) {}
 
   async execute(input: CreateAccountInput): Promise<Account> {
@@ -38,6 +40,7 @@ export class CreateAccount {
       currency: account.currency,
       type: account.type,
     });
+    this.metrics.recordAccountCreated();
     return account;
   }
 }
