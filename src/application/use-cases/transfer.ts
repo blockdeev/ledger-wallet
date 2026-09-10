@@ -11,6 +11,7 @@ import {
 import { deriveBalance } from "../balance-derivation.js";
 import { Logger } from "../ports/logger.js";
 import { MetricsRecorder } from "../ports/metrics-recorder.js";
+import { Tracer } from "../ports/tracer.js";
 import { OverdraftError } from "../../domain/errors.js";
 
 export interface TransferInput {
@@ -81,21 +82,34 @@ export class Transfer {
   constructor(
     private readonly uow: UnitOfWork,
     private readonly logger: Logger,
-    private readonly metrics: MetricsRecorder
+    private readonly metrics: MetricsRecorder,
+    private readonly tracer: Tracer
   ) {}
 
   async execute(input: TransferInput): Promise<TransferResult> {
-    const start = performance.now();
-    try {
-      const result = await this.executeInner(input);
-      this.metrics.recordTransfer(result.replayed ? "replayed" : "created");
-      return result;
-    } catch (err) {
-      this.metrics.recordTransfer(this.outcomeForError(err));
-      throw err;
-    } finally {
-      this.metrics.observeTransferDuration((performance.now() - start) / 1000);
-    }
+    return this.tracer.withSpan(
+      "transfer.execute",
+      {
+        fromAccountId: input.fromAccountId,
+        toAccountId: input.toAccountId,
+        amountMinor: input.amount.minor.toString(),
+        currency: input.amount.currency,
+        hasIdempotencyKey: input.idempotencyKey !== undefined,
+      },
+      async () => {
+        const start = performance.now();
+        try {
+          const result = await this.executeInner(input);
+          this.metrics.recordTransfer(result.replayed ? "replayed" : "created");
+          return result;
+        } catch (err) {
+          this.metrics.recordTransfer(this.outcomeForError(err));
+          throw err;
+        } finally {
+          this.metrics.observeTransferDuration((performance.now() - start) / 1000);
+        }
+      }
+    );
   }
 
   /** Lógica de ejecución (sin instrumentación de métricas de alto nivel). */

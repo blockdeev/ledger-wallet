@@ -22,6 +22,7 @@ import { AccountType } from "../../../src/domain/account.js";
 import { CapturingLogger } from "../../support/capturing-logger.js";
 import { CapturingMetrics } from "../../support/capturing-metrics.js";
 import { PrometheusMetrics } from "../../../src/adapters/observability/prometheus-metrics.js";
+import { NoopTracer } from "../../support/capturing-tracer.js";
 
 // ── Setup ─────────────────────────────────────────────────────────────────────
 
@@ -33,8 +34,8 @@ function makeApp(logger?: CapturingLogger): FastifyInstance {
   const log = logger ?? new CapturingLogger();
 
   const metrics = new CapturingMetrics();
-  const createAccount = new CreateAccount(accountRepo, log, metrics);
-  const transfer = new Transfer(uow, log, metrics);
+  const createAccount = new CreateAccount(accountRepo, log, metrics, new NoopTracer());
+  const transfer = new Transfer(uow, log, metrics, new NoopTracer());
   const getBalance = new GetBalance(accountRepo, txRepo, log);
 
   return buildApp({ createAccount, transfer, getBalance });
@@ -49,8 +50,8 @@ function makeAppWithPrometheus(): { app: FastifyInstance; prometheusMetrics: Pro
   const log = new CapturingLogger();
 
   const prometheusMetrics = new PrometheusMetrics();
-  const createAccount = new CreateAccount(accountRepo, log, prometheusMetrics);
-  const transfer = new Transfer(uow, log, prometheusMetrics);
+  const createAccount = new CreateAccount(accountRepo, log, prometheusMetrics, new NoopTracer());
+  const transfer = new Transfer(uow, log, prometheusMetrics, new NoopTracer());
   const getBalance = new GetBalance(accountRepo, txRepo, log);
 
   const app = buildApp({

@@ -5,6 +5,7 @@ import { AccountType } from "../../src/domain/account.js";
 import { AccountAlreadyExistsError } from "../../src/application/errors.js";
 import { CapturingLogger } from "../support/capturing-logger.js";
 import { CapturingMetrics } from "../support/capturing-metrics.js";
+import { NoopTracer, CapturingTracer } from "../support/capturing-tracer.js";
 
 describe("CreateAccount use case", () => {
   let accountRepo: InMemoryAccountRepository;
@@ -16,7 +17,7 @@ describe("CreateAccount use case", () => {
     accountRepo = new InMemoryAccountRepository();
     logger = new CapturingLogger();
     metrics = new CapturingMetrics();
-    createAccount = new CreateAccount(accountRepo, logger, metrics);
+    createAccount = new CreateAccount(accountRepo, logger, metrics, new NoopTracer());
   });
 
   it("creates and persists a new account", async () => {
@@ -130,5 +131,39 @@ describe("CreateAccount use case", () => {
     }
 
     expect(metrics.accountCreatedCount()).toBe(countAfterFirst); // sin incremento adicional
+  });
+});
+
+describe("CreateAccount — tracing (Fase 6)", () => {
+  it("abre un span 'account.create' con los atributos correctos en alta exitosa", async () => {
+    const repo = new InMemoryAccountRepository();
+    const tracer = new CapturingTracer();
+    const uc = new CreateAccount(repo, new CapturingLogger(), new CapturingMetrics(), tracer);
+
+    await uc.execute({ id: "acc-trace-1", currency: "ARS", type: AccountType.CUSTOMER_WALLET });
+
+    expect(tracer.spans).toHaveLength(1);
+    const span = tracer.firstByName("account.create");
+    expect(span).toBeDefined();
+    expect(span?.attributes).toMatchObject({
+      accountId: "acc-trace-1",
+      currency: "ARS",
+      type: AccountType.CUSTOMER_WALLET,
+    });
+    expect(span?.error).toBe(false);
+  });
+
+  it("el span se marca como error cuando la cuenta ya existe", async () => {
+    const repo = new InMemoryAccountRepository();
+    const tracer = new CapturingTracer();
+    const uc = new CreateAccount(repo, new CapturingLogger(), new CapturingMetrics(), tracer);
+
+    await uc.execute({ id: "acc-dup", currency: "ARS", type: AccountType.SYSTEM_CLEARING });
+    await expect(
+      uc.execute({ id: "acc-dup", currency: "ARS", type: AccountType.SYSTEM_CLEARING })
+    ).rejects.toThrow();
+
+    expect(tracer.spans).toHaveLength(2);
+    expect(tracer.spans[1]?.error).toBe(true);
   });
 });

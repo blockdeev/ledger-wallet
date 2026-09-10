@@ -20,6 +20,17 @@ export interface AppConfig {
   databaseUrl: string;
   /** Nivel de log pino. Default: "info". Configurable vía LOG_LEVEL. */
   logLevel: LogLevel;
+  /**
+   * Endpoint OTLP HTTP para el exporter de tracing (OpenTelemetry).
+   * Ejemplo: "http://localhost:4318/v1/traces"
+   *
+   * Si NO está seteado, el tracing queda INERTE: el SDK no se inicializa,
+   * la app bootea y funciona exactamente igual sin un collector OTel corriendo.
+   * Los tests y el uso local no requieren esta variable.
+   *
+   * Configurable vía OTEL_EXPORTER_OTLP_ENDPOINT.
+   */
+  otelExporterEndpoint?: string;
 }
 
 /**
@@ -54,5 +65,12 @@ export function loadConfig(): AppConfig {
   }
   const logLevel = logLevelRaw as LogLevel;
 
+  // OTEL_EXPORTER_OTLP_ENDPOINT es opcional. Si no está seteado, el tracing queda inerte.
+  const otelRaw = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+  const otelExporterEndpoint: string | undefined = otelRaw !== undefined && otelRaw !== "" ? otelRaw : undefined;
+
+  if (otelExporterEndpoint !== undefined) {
+    return { port, databaseUrl, logLevel, otelExporterEndpoint };
+  }
   return { port, databaseUrl, logLevel };
 }

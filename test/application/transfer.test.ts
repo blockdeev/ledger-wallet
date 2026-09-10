@@ -12,6 +12,7 @@ import { AccountNotFoundError, IdempotencyConflictError } from "../../src/applic
 import { OverdraftError } from "../../src/domain/errors.js";
 import { CapturingLogger } from "../support/capturing-logger.js";
 import { CapturingMetrics } from "../support/capturing-metrics.js";
+import { NoopTracer, CapturingTracer } from "../support/capturing-tracer.js";
 
 describe("Transfer use case", () => {
   let accountRepo: InMemoryAccountRepository;
@@ -29,9 +30,9 @@ describe("Transfer use case", () => {
     idempotencyRepo = new InMemoryIdempotencyRepository();
     uow = new InMemoryUnitOfWork(accountRepo, txRepo, idempotencyRepo);
     logger = new CapturingLogger();
-    transfer = new Transfer(uow, logger, new CapturingMetrics());
+    transfer = new Transfer(uow, logger, new CapturingMetrics(), new NoopTracer());
     getBalance = new GetBalance(accountRepo, txRepo, new CapturingLogger());
-    createAccount = new CreateAccount(accountRepo, new CapturingLogger(), new CapturingMetrics());
+    createAccount = new CreateAccount(accountRepo, new CapturingLogger(), new CapturingMetrics(), new NoopTracer());
   });
 
   // ── Helper ────────────────────────────────────────────────────────────────
@@ -326,9 +327,9 @@ describe("Transfer use case — idempotencia (Fase 3c)", () => {
     txRepo = new InMemoryTransactionRepository();
     idempotencyRepo = new InMemoryIdempotencyRepository();
     uow = new InMemoryUnitOfWork(accountRepo, txRepo, idempotencyRepo);
-    transfer = new Transfer(uow, new CapturingLogger(), new CapturingMetrics());
+    transfer = new Transfer(uow, new CapturingLogger(), new CapturingMetrics(), new NoopTracer());
     getBalance = new GetBalance(accountRepo, txRepo, new CapturingLogger());
-    createAccount = new CreateAccount(accountRepo, new CapturingLogger(), new CapturingMetrics());
+    createAccount = new CreateAccount(accountRepo, new CapturingLogger(), new CapturingMetrics(), new NoopTracer());
 
     await createAccount.execute({ id: "system", currency: "ARS", type: AccountType.SYSTEM_CLEARING });
     await createAccount.execute({ id: "wallet-a", currency: "ARS", type: AccountType.CUSTOMER_WALLET });
@@ -568,7 +569,7 @@ describe("Transfer use case — idempotencia (Fase 3c)", () => {
   it("logging: emite transfer.created (info) en transferencia sin clave", async () => {
     // wallet-a ya tiene 1000 ARS del beforeEach
     const transferLogger = new CapturingLogger();
-    const t = new Transfer(uow, transferLogger, new CapturingMetrics());
+    const t = new Transfer(uow, transferLogger, new CapturingMetrics(), new NoopTracer());
 
     await t.execute({
       id: "tx-log-1",
@@ -592,7 +593,7 @@ describe("Transfer use case — idempotencia (Fase 3c)", () => {
 
   it("logging: emite transfer.created (info) con idempotencyKey cuando se usa", async () => {
     const transferLogger = new CapturingLogger();
-    const t = new Transfer(uow, transferLogger, new CapturingMetrics());
+    const t = new Transfer(uow, transferLogger, new CapturingMetrics(), new NoopTracer());
 
     await t.execute({
       id: "tx-log-idem",
@@ -612,7 +613,7 @@ describe("Transfer use case — idempotencia (Fase 3c)", () => {
 
   it("logging: emite transfer.replayed (info) en replay", async () => {
     const transferLogger = new CapturingLogger();
-    const t = new Transfer(uow, transferLogger, new CapturingMetrics());
+    const t = new Transfer(uow, transferLogger, new CapturingMetrics(), new NoopTracer());
 
     const input = {
       id: "tx-replay-log",
@@ -637,7 +638,7 @@ describe("Transfer use case — idempotencia (Fase 3c)", () => {
 
   it("logging: emite transfer.conflict (warn) ante IdempotencyConflictError", async () => {
     const transferLogger = new CapturingLogger();
-    const t = new Transfer(uow, transferLogger, new CapturingMetrics());
+    const t = new Transfer(uow, transferLogger, new CapturingMetrics(), new NoopTracer());
 
     await t.execute({
       id: "tx-conflict-log-1",
@@ -668,7 +669,7 @@ describe("Transfer use case — idempotencia (Fase 3c)", () => {
 
   it("logging: emite transfer.overdraft_rejected (warn) ante OverdraftError", async () => {
     const transferLogger = new CapturingLogger();
-    const t = new Transfer(uow, transferLogger, new CapturingMetrics());
+    const t = new Transfer(uow, transferLogger, new CapturingMetrics(), new NoopTracer());
 
     try {
       await t.execute({
@@ -693,7 +694,7 @@ describe("Transfer use case — idempotencia (Fase 3c)", () => {
 
   it("logging: emite transfer.account_not_found (warn) ante AccountNotFoundError", async () => {
     const transferLogger = new CapturingLogger();
-    const t = new Transfer(uow, transferLogger, new CapturingMetrics());
+    const t = new Transfer(uow, transferLogger, new CapturingMetrics(), new NoopTracer());
 
     try {
       await t.execute({
@@ -732,8 +733,8 @@ describe("Transfer use case — métricas (Fase 5)", () => {
     idempotencyRepo = new InMemoryIdempotencyRepository();
     uow = new InMemoryUnitOfWork(accountRepo, txRepo, idempotencyRepo);
     metrics = new CapturingMetrics();
-    transfer = new Transfer(uow, new CapturingLogger(), metrics);
-    createAccount = new CreateAccount(accountRepo, new CapturingLogger(), new CapturingMetrics());
+    transfer = new Transfer(uow, new CapturingLogger(), metrics, new NoopTracer());
+    createAccount = new CreateAccount(accountRepo, new CapturingLogger(), new CapturingMetrics(), new NoopTracer());
 
     await createAccount.execute({ id: "system", currency: "ARS", type: AccountType.SYSTEM_CLEARING });
     await createAccount.execute({ id: "wallet-a", currency: "ARS", type: AccountType.CUSTOMER_WALLET });
@@ -866,12 +867,12 @@ describe("Transfer use case — métricas: error inesperado (Fase 6 fix)", () =>
     metrics = new CapturingMetrics();
 
     const uow = new InMemoryUnitOfWork(accountRepo, txRepo, idempotencyRepo);
-    const createAccount = new CreateAccount(accountRepo, new CapturingLogger(), new CapturingMetrics());
+    const createAccount = new CreateAccount(accountRepo, new CapturingLogger(), new CapturingMetrics(), new NoopTracer());
     await createAccount.execute({ id: "system", currency: "ARS", type: AccountType.SYSTEM_CLEARING });
     await createAccount.execute({ id: "wallet-a", currency: "ARS", type: AccountType.CUSTOMER_WALLET });
 
     // Fondear wallet-a para que el test de error no se confunda con un overdraft
-    const seedTransfer = new Transfer(uow, new CapturingLogger(), new CapturingMetrics());
+    const seedTransfer = new Transfer(uow, new CapturingLogger(), new CapturingMetrics(), new NoopTracer());
     await seedTransfer.execute({
       id: "seed-error-test",
       fromAccountId: "system",
@@ -884,10 +885,10 @@ describe("Transfer use case — métricas: error inesperado (Fase 6 fix)", () =>
     // UoW doble que lanza un Error genérico (caída de DB, bug interno)
     // No es OverdraftError, AccountNotFoundError ni IdempotencyConflictError
     const bustedUow = new InMemoryUnitOfWork(accountRepo, txRepo, idempotencyRepo);
-    bustedUow.transaction = async () => {
-      throw new Error("DB connection lost");
+    bustedUow.transaction = () => {
+      return Promise.reject(new Error("DB connection lost"));
     };
-    const transferWithBustedUow = new Transfer(bustedUow, new CapturingLogger(), metrics);
+    const transferWithBustedUow = new Transfer(bustedUow, new CapturingLogger(), metrics, new NoopTracer());
 
     await expect(
       transferWithBustedUow.execute({
@@ -901,5 +902,89 @@ describe("Transfer use case — métricas: error inesperado (Fase 6 fix)", () =>
     // outcome="error" registrado — no "created"
     expect(metrics.transfersWithOutcome("error")).toBe(1);
     expect(metrics.transfersWithOutcome("created")).toBe(0);
+  });
+});
+
+describe("Transfer — tracing (Fase 6)", () => {
+  let accountRepo: InMemoryAccountRepository;
+  let txRepo: InMemoryTransactionRepository;
+  let idempotencyRepo: InMemoryIdempotencyRepository;
+  let uow: InMemoryUnitOfWork;
+
+  beforeEach(async () => {
+    accountRepo = new InMemoryAccountRepository();
+    txRepo = new InMemoryTransactionRepository();
+    idempotencyRepo = new InMemoryIdempotencyRepository();
+    uow = new InMemoryUnitOfWork(accountRepo, txRepo, idempotencyRepo);
+
+    const setupCreateAccount = new CreateAccount(accountRepo, new CapturingLogger(), new CapturingMetrics(), new NoopTracer());
+    await setupCreateAccount.execute({ id: "sys", currency: "ARS", type: AccountType.SYSTEM_CLEARING });
+    await setupCreateAccount.execute({ id: "wallet", currency: "ARS", type: AccountType.CUSTOMER_WALLET });
+
+    // Fondear wallet con 1000 ARS
+    const seedTransfer = new Transfer(uow, new CapturingLogger(), new CapturingMetrics(), new NoopTracer());
+    await seedTransfer.execute({
+      id: "seed-trace",
+      fromAccountId: "sys",
+      toAccountId: "wallet",
+      amount: Money.fromMinor(1000n, "ARS"),
+    });
+  });
+
+  it("abre un span 'transfer.execute' con los atributos correctos", async () => {
+    const tracer = new CapturingTracer();
+    const transfer = new Transfer(uow, new CapturingLogger(), new CapturingMetrics(), tracer);
+
+    await transfer.execute({
+      id: "tx-trace-1",
+      fromAccountId: "wallet",
+      toAccountId: "sys",
+      amount: Money.fromMinor(100n, "ARS"),
+    });
+
+    // El seed también generó spans antes; filtramos por nombre
+    const span = tracer.firstByName("transfer.execute");
+    expect(span).toBeDefined();
+    expect(span?.attributes).toMatchObject({
+      fromAccountId: "wallet",
+      toAccountId: "sys",
+      currency: "ARS",
+      hasIdempotencyKey: false,
+    });
+    expect(span?.error).toBe(false);
+  });
+
+  it("el span incluye amountMinor y hasIdempotencyKey=true cuando hay clave", async () => {
+    const tracer = new CapturingTracer();
+    const transfer = new Transfer(uow, new CapturingLogger(), new CapturingMetrics(), tracer);
+
+    await transfer.execute({
+      id: "tx-trace-idem",
+      fromAccountId: "wallet",
+      toAccountId: "sys",
+      amount: Money.fromMinor(50n, "ARS"),
+      idempotencyKey: "trace-key-1",
+    });
+
+    const span = tracer.firstByName("transfer.execute");
+    expect(span?.attributes.hasIdempotencyKey).toBe(true);
+    expect(span?.attributes.amountMinor).toBe("50");
+  });
+
+  it("el span se marca como error cuando la transferencia falla con OverdraftError", async () => {
+    const tracer = new CapturingTracer();
+    const transfer = new Transfer(uow, new CapturingLogger(), new CapturingMetrics(), tracer);
+
+    await expect(
+      transfer.execute({
+        id: "tx-trace-overdraft",
+        fromAccountId: "wallet",
+        toAccountId: "sys",
+        amount: Money.fromMinor(99999n, "ARS"),
+      })
+    ).rejects.toThrow();
+
+    const span = tracer.firstByName("transfer.execute");
+    expect(span?.error).toBe(true);
   });
 });

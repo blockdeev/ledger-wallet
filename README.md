@@ -451,6 +451,54 @@ que usa `prom-client`) vive en `src/adapters/observability/`. El doble de test
 `CapturingMetrics` (`test/support/`) permite afirmar sobre métricas sin
 instanciar Prometheus. Ver [ADR 0013](docs/adr/0013-metricas.md).
 
+## Tracing
+
+La aplicación instrumenta los tres casos de uso con spans OpenTelemetry y genera
+un span raíz por request HTTP, correlacionado con los logs vía `requestId`.
+
+### Configuración
+
+La variable `OTEL_EXPORTER_OTLP_ENDPOINT` configura el endpoint del collector OTLP
+HTTP (opcional). Si no está seteada, el tracing queda **inerte**: la app bootea y
+funciona exactamente igual sin ningún collector corriendo.
+
+```bash
+# Con collector local (p. ej. Jaeger o un OTel Collector)
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces npm start
+
+# Sin tracing (default; no requiere collector)
+npm start
+```
+
+### Qué se instrumenta
+
+| Span | Atributos | Cuándo |
+|---|---|---|
+| `POST /transfers` (span raíz) | `http.request_id`, `http.status_code` | Por cada request HTTP |
+| `transfer.execute` | `fromAccountId`, `toAccountId`, `amountMinor`, `currency`, `hasIdempotencyKey` | En `Transfer.execute()` |
+| `account.create` | `accountId`, `currency`, `type` | En `CreateAccount.execute()` |
+| `balance.get` | `accountId` | En `GetBalance.execute()` |
+
+El nombre del span raíz es `"METHOD /url"` (p. ej. `"POST /transfers"`).
+Los spans de los casos de uso son hijos automáticos del span raíz gracias a
+la propagación de contexto de OTel por AsyncLocalStorage.
+
+### Correlación trazas ↔ logs
+
+Cada span raíz lleva el atributo `http.request_id` con el `requestId` de Fastify.
+Todos los logs emitidos durante ese request llevan el mismo `requestId` en el
+campo `reqId`. En Grafana/Jaeger/Tempo se puede pasar de una traza a sus logs
+filtrando por ese ID.
+
+### Arquitectura
+
+El tracing sigue el mismo patrón hexagonal que el logging y las métricas: el puerto
+`Tracer` (`src/application/ports/tracer.ts`) es la única dependencia en la capa de
+aplicación. El adapter concreto (`OtelTracer`, que usa `@opentelemetry/api`) y el
+bootstrap del SDK (`otel-sdk.ts`) viven en `src/adapters/observability/`. El doble
+de test `CapturingTracer` y `NoopTracer` (`test/support/`) permiten afirmar sobre
+spans sin instanciar el SDK OTel. Ver [ADR 0014](docs/adr/0014-tracing.md).
+
 ## Decisiones de arquitectura (ADRs)
 
 Ver [`docs/adr/`](docs/adr):
@@ -468,6 +516,7 @@ Ver [`docs/adr/`](docs/adr):
 - `0011` — Idempotencia (reserve-first, constraint única, replay concurrente)
 - `0012` — Observabilidad: logging estructurado por puerto + AsyncLocalStorage
 - `0013` — Observabilidad: métricas de negocio por puerto + Prometheus
+- `0014` — Observabilidad: tracing distribuido por puerto `Tracer` + OpenTelemetry
 
 ## Licencia
 
