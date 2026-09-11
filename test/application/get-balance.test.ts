@@ -128,3 +128,37 @@ describe("GetBalance use case", () => {
     expect((await getBalance.execute({ accountId: "wallet-b" })).minor).toBe(700n);
   });
 });
+
+import { CapturingTracer } from "../support/capturing-tracer.js";
+
+describe("GetBalance — tracing (Fase 6)", () => {
+  it("abre un span 'balance.get' con accountId como atributo", async () => {
+    const repo = new InMemoryAccountRepository();
+    const txRepo = new InMemoryTransactionRepository();
+    const tracer = new CapturingTracer();
+    const uc = new GetBalance(repo, txRepo, new CapturingLogger(), undefined, tracer);
+
+    const acc = createAccount("wallet-trace", "ARS", AccountType.CUSTOMER_WALLET);
+    await repo.save(acc);
+
+    await uc.execute({ accountId: "wallet-trace" });
+
+    expect(tracer.spans).toHaveLength(1);
+    const span = tracer.firstByName("balance.get");
+    expect(span).toBeDefined();
+    expect(span?.attributes).toMatchObject({ accountId: "wallet-trace" });
+    expect(span?.error).toBe(false);
+  });
+
+  it("el span se marca como error cuando la cuenta no existe", async () => {
+    const repo = new InMemoryAccountRepository();
+    const txRepo = new InMemoryTransactionRepository();
+    const tracer = new CapturingTracer();
+    const uc = new GetBalance(repo, txRepo, new CapturingLogger(), undefined, tracer);
+
+    await expect(uc.execute({ accountId: "ghost" })).rejects.toThrow();
+
+    expect(tracer.spans).toHaveLength(1);
+    expect(tracer.spans[0]?.error).toBe(true);
+  });
+});

@@ -17,7 +17,8 @@ export type TransferOutcome =
   | "replayed"   // Replay de una transferencia ya ejecutada (idempotencia)
   | "conflict"   // IdempotencyConflictError: misma clave, payload distinto
   | "overdraft"  // OverdraftError: saldo insuficiente en cuenta origen
-  | "not_found"; // AccountNotFoundError: cuenta origen o destino inexistente
+  | "not_found"  // AccountNotFoundError: cuenta origen o destino inexistente
+  | "error";     // Error inesperado (bug, caída de DB, CurrencyMismatchError, etc.)
 
 export interface MetricsRecorder {
   /** Registra el resultado de un intento de transferencia (counter con label). */

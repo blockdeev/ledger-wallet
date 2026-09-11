@@ -5,6 +5,7 @@ import { AccountNotFoundError } from "../errors.js";
 import { deriveBalance } from "../balance-derivation.js";
 import { Logger } from "../ports/logger.js";
 import { MetricsRecorder } from "../ports/metrics-recorder.js";
+import { Tracer } from "../ports/tracer.js";
 
 export interface GetBalanceInput {
   accountId: string;
@@ -26,30 +27,41 @@ export interface GetBalanceInput {
 export class GetBalance {
   private readonly accountRepo: AccountRepository;
   private readonly txRepo: TransactionRepository;
+  private readonly tracer: Tracer;
 
   constructor(
     accountRepo: AccountRepository,
     txRepo: TransactionRepository,
     // Logger recibido por consistencia con la interfaz app-scoped de la Fase 4.
     // Las lecturas de balance no se instrumentan (generan ruido; fuera de alcance).
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     _logger: Logger,
     // MetricsRecorder recibido por consistencia con la API app-scoped de la Fase 5.
     // GetBalance no registra métricas (ver brief y ADR 0013).
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    _metrics?: MetricsRecorder
+    _metrics?: MetricsRecorder,
+    tracer?: Tracer
   ) {
     this.accountRepo = accountRepo;
     this.txRepo = txRepo;
+    this.tracer = tracer ?? {
+      async withSpan<T>(_n: string, _a: Record<string, string | number | boolean>, fn: () => Promise<T>): Promise<T> {
+        return fn();
+      },
+    };
   }
 
   async execute(input: GetBalanceInput): Promise<Money> {
-    const account = await this.accountRepo.findById(input.accountId);
-    if (account === undefined) {
-      throw new AccountNotFoundError(input.accountId);
-    }
+    return this.tracer.withSpan(
+      "balance.get",
+      { accountId: input.accountId },
+      async () => {
+        const account = await this.accountRepo.findById(input.accountId);
+        if (account === undefined) {
+          throw new AccountNotFoundError(input.accountId);
+        }
 
-    const txs = await this.txRepo.listAll();
-    return deriveBalance(input.accountId, account, txs);
+        const txs = await this.txRepo.listAll();
+        return deriveBalance(input.accountId, account, txs);
+      }
+    );
   }
 }

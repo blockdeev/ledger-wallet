@@ -42,6 +42,7 @@ import { GetBalance } from "../../../src/application/use-cases/get-balance.js";
 import { AccountType } from "../../../src/domain/account.js";
 import { Money } from "../../../src/domain/money.js";
 import { IdempotencyConflictError } from "../../../src/application/errors.js";
+import { NoopTracer } from "../../support/capturing-tracer.js";
 
 // ── Setup del contenedor ──────────────────────────────────────────────────────
 
@@ -86,8 +87,8 @@ function makeUseCases() {
   const accountRepo = new PostgresAccountRepository(db);
   const txRepo = new PostgresTransactionRepository(db);
   const uow = new PostgresUnitOfWork(db);
-  const createAccount = new CreateAccount(accountRepo, new CapturingLogger(), new CapturingMetrics());
-  const transfer = new Transfer(uow, new CapturingLogger(), new CapturingMetrics());
+  const createAccount = new CreateAccount(accountRepo, new CapturingLogger(), new CapturingMetrics(), new NoopTracer());
+  const transfer = new Transfer(uow, new CapturingLogger(), new CapturingMetrics(), new NoopTracer());
   const getBalance = new GetBalance(accountRepo, txRepo, new CapturingLogger());
   return { createAccount, transfer, getBalance, uow };
 }

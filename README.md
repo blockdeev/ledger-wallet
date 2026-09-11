@@ -15,13 +15,14 @@ Pull Request con el CI en verde.
 - [x] **Fase 0 — Walking skeleton.** Compila, testea, linta, bootea y buildea en Docker con CI.
 - [x] **Fase 1 — Núcleo de dominio (TDD).** `Money`, `Account`, `Posting`, `LedgerTransaction` y sus invariantes; 100% test-first.
 - [x] **Fase 2 — Ports y casos de uso.** Puertos de salida (`AccountRepository`, `TransactionRepository`), casos de uso (`CreateAccount`, `Transfer`, `GetBalance`), adapters in-memory, derivación de saldo desde historial. Tests end-to-end sin DB.
-- [ ] **Fase 3 — Persistencia.**
+- [x] **Fase 3 — Persistencia.**
   - [x] **Fase 3a — Adapters Postgres detrás de los puertos.** `PostgresAccountRepository` y `PostgresTransactionRepository` sobre PostgreSQL 16 + Kysely, implementando los mismos puertos de Fase 2. Migraciones versionadas en código; validación fail-fast de `config/env`; contract tests reutilizables que corren tanto sobre in-memory como sobre Postgres (testcontainers). El saldo sigue derivándose del historial; atomicidad e idempotencia en Fase 3b.
   - [x] **Fase 3b — Endpoints HTTP y transferencias seguras bajo concurrencia.** Los tres casos de uso expuestos por HTTP (Fastify). Puerto `UnitOfWork` que envuelve `Transfer` en una transacción de DB con `SELECT ... FOR UPDATE ORDER BY id` para serializar transferencias concurrentes y eliminar el doble-gasto. Saldo derivado dentro de la transacción con lock. Sin idempotencia (Fase 3c).
-  - [ ] **Fase 3c — Idempotencia.** Header `Idempotency-Key`, constraint único, retry seguro.
-- [ ] **Fase 4 — Observabilidad.** Logging estructurado, tracing, métricas.
-- [ ] **Fase 5 — CI/CD y despliegue.**
-- [ ] **Fase 6 — Integración AWS** (SQS / SNS / S3).
+  - [x] **Fase 3c — Idempotencia.** Header `Idempotency-Key`, constraint único, retry seguro. [ADR 0011](docs/adr/0011-idempotencia.md)
+- [x] **Fase 4 — Logging estructurado.** Puerto `Logger`, adapter pino, correlación por `requestId` vía AsyncLocalStorage. [ADR 0012](docs/adr/0012-observabilidad-logging.md)
+- [x] **Fase 5 — Hardening typecheck + métricas de negocio.** `typecheck` cubre `test/`; puerto `MetricsRecorder`, adapter Prometheus, endpoint `/metrics`. [ADR 0013](docs/adr/0013-metricas.md)
+- [ ] **Fase 6 — Tracing distribuido (en curso).** Puerto `Tracer`, adapter OpenTelemetry, spans por caso de uso, correlación con `requestId`.
+- **Más adelante — Camino a producto:** API de lectura para frontend, auth, despliegue, AWS.
 
 ## Stack
 
@@ -439,6 +440,7 @@ scrape_configs:
 | `conflict` | `IdempotencyConflictError`: misma clave, payload distinto |
 | `overdraft` | `OverdraftError`: saldo insuficiente en cuenta origen |
 | `not_found` | `AccountNotFoundError`: cuenta origen o destino inexistente |
+| `error` | Error inesperado (bug, caída de DB, `CurrencyMismatchError`, etc.) |
 
 ### Arquitectura
 
@@ -448,6 +450,54 @@ dependencia en la capa de aplicación. El adapter concreto (`PrometheusMetrics`,
 que usa `prom-client`) vive en `src/adapters/observability/`. El doble de test
 `CapturingMetrics` (`test/support/`) permite afirmar sobre métricas sin
 instanciar Prometheus. Ver [ADR 0013](docs/adr/0013-metricas.md).
+
+## Tracing
+
+La aplicación instrumenta los tres casos de uso con spans OpenTelemetry y genera
+un span raíz por request HTTP, correlacionado con los logs vía `requestId`.
+
+### Configuración
+
+La variable `OTEL_EXPORTER_OTLP_ENDPOINT` configura el endpoint del collector OTLP
+HTTP (opcional). Si no está seteada, el tracing queda **inerte**: la app bootea y
+funciona exactamente igual sin ningún collector corriendo.
+
+```bash
+# Con collector local (p. ej. Jaeger o un OTel Collector)
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces npm start
+
+# Sin tracing (default; no requiere collector)
+npm start
+```
+
+### Qué se instrumenta
+
+| Span | Atributos | Cuándo |
+|---|---|---|
+| `POST /transfers` (span raíz) | `http.request_id`, `http.status_code` | Por cada request HTTP |
+| `transfer.execute` | `fromAccountId`, `toAccountId`, `amountMinor`, `currency`, `hasIdempotencyKey` | En `Transfer.execute()` |
+| `account.create` | `accountId`, `currency`, `type` | En `CreateAccount.execute()` |
+| `balance.get` | `accountId` | En `GetBalance.execute()` |
+
+El nombre del span raíz es `"METHOD /url"` (p. ej. `"POST /transfers"`).
+Los spans de los casos de uso son hijos automáticos del span raíz gracias a
+la propagación de contexto de OTel por AsyncLocalStorage.
+
+### Correlación trazas ↔ logs
+
+Cada span raíz lleva el atributo `http.request_id` con el `requestId` de Fastify.
+Todos los logs emitidos durante ese request llevan el mismo `requestId` en el
+campo `reqId`. En Grafana/Jaeger/Tempo se puede pasar de una traza a sus logs
+filtrando por ese ID.
+
+### Arquitectura
+
+El tracing sigue el mismo patrón hexagonal que el logging y las métricas: el puerto
+`Tracer` (`src/application/ports/tracer.ts`) es la única dependencia en la capa de
+aplicación. El adapter concreto (`OtelTracer`, que usa `@opentelemetry/api`) y el
+bootstrap del SDK (`otel-sdk.ts`) viven en `src/adapters/observability/`. El doble
+de test `CapturingTracer` y `NoopTracer` (`test/support/`) permiten afirmar sobre
+spans sin instanciar el SDK OTel. Ver [ADR 0014](docs/adr/0014-tracing.md).
 
 ## Decisiones de arquitectura (ADRs)
 
@@ -466,6 +516,7 @@ Ver [`docs/adr/`](docs/adr):
 - `0011` — Idempotencia (reserve-first, constraint única, replay concurrente)
 - `0012` — Observabilidad: logging estructurado por puerto + AsyncLocalStorage
 - `0013` — Observabilidad: métricas de negocio por puerto + Prometheus
+- `0014` — Observabilidad: tracing distribuido por puerto `Tracer` + OpenTelemetry
 
 ## Licencia
 

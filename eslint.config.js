@@ -48,6 +48,7 @@ export default tseslint.config(
             { group: ["pg", "pg/*"], message: "Application layer must not depend on pg (DB adapter)." },
             { group: ["**/adapters/**"], message: "Application layer must not import from adapters." },
             { group: ["**/config/**"], message: "Application layer must not import from config." },
+            { group: ["@opentelemetry/*", "@opentelemetry/**"], message: "Application layer must not depend on OpenTelemetry directly — use the Tracer port." },
           ],
         },
       ],

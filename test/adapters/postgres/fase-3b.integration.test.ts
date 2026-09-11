@@ -34,6 +34,7 @@ import { GetBalance } from "../../../src/application/use-cases/get-balance.js";
 import { AccountType } from "../../../src/domain/account.js";
 import { Money } from "../../../src/domain/money.js";
 import { OverdraftError } from "../../../src/domain/errors.js";
+import { NoopTracer } from "../../support/capturing-tracer.js";
 
 // ── Setup del contenedor ──────────────────────────────────────────────────────
 
@@ -80,8 +81,8 @@ function makeUseCases() {
   const uow = new PostgresUnitOfWork(db);
 
   return {
-    createAccount: new CreateAccount(accountRepo, new CapturingLogger(), new CapturingMetrics()),
-    transfer: new Transfer(uow, new CapturingLogger(), new CapturingMetrics()),
+    createAccount: new CreateAccount(accountRepo, new CapturingLogger(), new CapturingMetrics(), new NoopTracer()),
+    transfer: new Transfer(uow, new CapturingLogger(), new CapturingMetrics(), new NoopTracer()),
     getBalance: new GetBalance(accountRepo, txRepo, new CapturingLogger()),
   };
 }
